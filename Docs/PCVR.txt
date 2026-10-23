@@ -14,6 +14,17 @@ Before you start (once)
        "OpenXR Runtime" > Set Meta Quest Link as active.
      - SteamVR: SteamVR settings > OpenXR > set SteamVR as the OpenXR runtime.
 
+On Linux (experimental: the LostWorldVR-linux-x86_64.tar.gz download)
+  Use this build, not the Windows one under Proton: Proton's OpenXR layer only takes
+  Vulkan/Direct3D, and this emulator draws with OpenGL, so the Windows build stops at start-up
+  (XR_ERROR_GRAPHICS_DEVICE_INVALID).
+  1. Unpack the tarball and put lostwsga.zip in its ROMs folder.
+  2. Start your OpenXR runtime (SteamVR, Monado, WiVRn or ALVR) and make it the active one.
+  3. Run ./play-lostworld-vr.sh (./play-lostworld-flat.sh for a flat window).
+  It runs under X11 / XWayland (SDL_VIDEODRIVER=x11). SDL2, SDL2_net, GLU and the Khronos
+  OpenXR loader are included in lib/ for systems that lack them. Tested with Monado's
+  simulated headset only; reports from real setups are welcome.
+
 Playing
   1. Connect the headset (Virtual Desktop streaming, Link, or SteamVR running).
   2. Double-click "Play The Lost World VR.bat".

@@ -1,7 +1,7 @@
-name: Windows build (PC VR)
+name: PC VR build (Windows + Linux)
 
-# Every push and pull request builds the Windows package and attaches it to the run as an
-# artifact. Pushing a tag like v0.1.0 also publishes it as a GitHub release.
+# Every push and pull request builds the Windows and Linux packages and attaches them to the run
+# as artifacts. Pushing a tag like v0.1.0 also publishes it as a GitHub release.
 on:
   push:
     branches: [ main ]
@@ -64,12 +64,75 @@ jobs:
           name: LostWorldVR-windows
           path: pkg/LostWorldVR-windows.zip
 
+  linux:
+    runs-on: ubuntu-22.04      # older glibc, so the binary runs on most current distros
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q build-essential cmake python3 libsdl2-dev libsdl2-net-dev libglu1-mesa-dev zlib1g-dev libx11-dev
+
+      - name: Build supermodel
+        run: |
+          set -o pipefail
+          make -f Makefiles/Makefile.UNIX NET_BOARD=0 OPT="-O3" -j4 2>&1 | tee "$RUNNER_TEMP/build-linux.log"
+
+      - name: Build the Khronos OpenXR loader
+        run: |
+          set -e
+          curl -sSL -o sdk.tar.gz https://github.com/KhronosGroup/OpenXR-SDK-Source/archive/refs/tags/release-1.1.49.tar.gz
+          tar xzf sdk.tar.gz
+          cmake -S OpenXR-SDK-Source-release-1.1.49 -B xrbuild -DCMAKE_BUILD_TYPE=Release -DDYNAMIC_LOADER=ON -DBUILD_TESTS=OFF -DBUILD_API_LAYERS=OFF -DBUILD_CONFORMANCE_TESTS=OFF -DBUILD_ALL_EXTENSIONS=OFF > /dev/null
+          cmake --build xrbuild --target openxr_loader -j4 > /dev/null
+
+      - name: Package
+        run: |
+          set -e
+          out=pkg/LostWorldVR
+          mkdir -p "$out/Config" "$out/NVRAM" "$out/Saves" "$out/ROMs" "$out/Assets" "$out/lib"
+          cp bin/supermodel "$out/"
+          strip "$out/supermodel"
+          cp Config/Games.xml Config/Music.xml Config/Supermodel.ini "$out/Config/"
+          cp -r Assets/* "$out/Assets/" 2>/dev/null || true
+          cp Docs/PCVR.txt "$out/README-VR.txt"
+          cp LICENSE "$out/LICENSE.txt"
+          cp Scripts/vr/*.sh "$out/"
+          chmod +x "$out"/*.sh "$out/supermodel"
+          echo "Put your own lostwsga.zip ROM set here." > "$out/ROMs/PUT-ROMS-HERE.txt"
+          # Libraries a SteamOS / minimal desktop may lack (GL, X11 and libc come from the system):
+          # the Khronos OpenXR loader (Apache-2.0), SDL2 and SDL2_net (zlib), GLU (SGI Free B).
+          cp "$(find xrbuild -name 'libopenxr_loader.so.1.*' -type f | head -n1)" "$out/lib/libopenxr_loader.so.1"
+          for l in libSDL2-2.0.so.0 libSDL2_net-2.0.so.0 libGLU.so.1; do
+            cp -L "$(ldconfig -p | awk -v l="$l" '$1 == l && /x86-64/ {print $NF; exit}')" "$out/lib/$l"
+          done
+          (cd "$out" && LD_LIBRARY_PATH=lib ldd ./supermodel | grep -i "not found" && exit 1 || true)
+          (cd pkg && tar czf LostWorldVR-linux-x86_64.tar.gz LostWorldVR)
+          ls -la pkg "$out" "$out/lib"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LostWorldVR-linux
+          path: pkg/LostWorldVR-linux-x86_64.tar.gz
+
+  release:
+    needs: [ windows, linux ]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+
       # The release is published by this workflow itself: the version comes from the VERSION
-      # file (or from the tag when a v* tag is pushed). Each push to main refreshes the zip on
-      # the release for the current version; bump VERSION to start a new release.
+      # file (or from the tag when a v* tag is pushed). Each push to main refreshes the packages
+      # on the release for the current version; bump VERSION to start a new release.
       - name: Release version
         id: ver
-        if: github.event_name == 'push'
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
@@ -78,12 +141,13 @@ jobs:
           fi
 
       - name: Publish release
-        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: The Lost World PC VR ${{ steps.ver.outputs.tag }}
-          files: pkg/LostWorldVR-windows.zip
+          files: |
+            art/LostWorldVR-windows/LostWorldVR-windows.zip
+            art/LostWorldVR-linux/LostWorldVR-linux-x86_64.tar.gz
           make_latest: true
           body_path: RELEASE_NOTES.md

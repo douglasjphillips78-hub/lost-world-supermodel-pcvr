@@ -1,6 +1,6 @@
 Windows build of Supermodel with the OpenXR VR mode, set up for **The Lost World: Jurassic Park**.
 
-**Download** `LostWorldVR-windows.zip` below and unzip it. Put your own `lostwsga.zip` ROM set in the `ROMs` folder. Connect the headset, with Virtual Desktop, Quest Link or SteamVR as the active OpenXR runtime, and run `Play The Lost World VR.bat`. Full instructions are in `README-VR.txt` inside the zip and in the README. No ROMs or other game files are included.
+**Download** `LostWorldVR-windows.zip` (Windows) or `LostWorldVR-linux-x86_64.tar.gz` (Linux, experimental) below and unpack it. Put your own `lostwsga.zip` ROM set in the `ROMs` folder. Connect the headset, with Virtual Desktop, Quest Link or SteamVR as the active OpenXR runtime, and run `Play The Lost World VR.bat` (Linux: `./play-lostworld-vr.sh`, with SteamVR, Monado, WiVRn or ALVR). Full instructions are in `README-VR.txt` inside the zip and in the README. No ROMs or other game files are included.
 
 ## v0.2.0
 
@@ -10,6 +10,7 @@ Windows build of Supermodel with the OpenXR VR mode, set up for **The Lost World
 - **Gun lighting:** the guns are lit so every side you turn towards you reads, with soft highlights; double-sided polygons no longer flicker light/dark.
 - **Flashlight scenes** (e.g. the night T-Rex) are lit correctly in the headset: the light lies on the scene in both eyes instead of floating in front of you.
 - **Hide player 2's PRESS START** now works in The Lost World: player 2's INSERT COIN / Push 2P Start is hidden in play and in cutscenes.
+- **Linux build (experimental):** a native x86_64 build, `LostWorldVR-linux-x86_64.tar.gz`, with start scripts and the libraries it needs. Use it instead of running the Windows build under Proton, which can't work (Proton's OpenXR layer has no OpenGL support). Tested with Monado's simulated headset only; reports welcome.
 - The guns' textures are kept in `Saves/lostwsga.vrguntex` (made from your ROM on your PC) once the game has shown them.
 
 ## v0.1.0 — first release

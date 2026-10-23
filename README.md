@@ -32,6 +32,17 @@ Developed and tested on a Meta Quest 3 streamed with **Virtual Desktop** (VDXR r
    - **SteamVR:** in SteamVR's settings, go to OpenXR.
 4. Connect the headset, then double-click **`Play The Lost World VR.bat`**. The game waits until the headset is in use, so you can start it from the PC first.
 
+### Quick start (Linux, experimental)
+
+Don't run the Windows build under Proton: Proton's OpenXR layer only supports Vulkan and Direct3D, and this emulator draws with OpenGL, so it stops at start-up with `XR_ERROR_GRAPHICS_DEVICE_INVALID`. Use the native build instead:
+
+1. Download `LostWorldVR-linux-x86_64.tar.gz` from the [Releases](../../releases) page and unpack it.
+2. Put `lostwsga.zip` in the `ROMs` folder.
+3. Start your OpenXR runtime (SteamVR, Monado, WiVRn or ALVR) and make it the active one.
+4. Run `./play-lostworld-vr.sh` (or `./play-lostworld-flat.sh` for a flat window).
+
+It runs under X11 or XWayland. SDL2, SDL2_net, GLU and the Khronos OpenXR loader are included in `lib/` for systems that lack them. So far it has only been tested with Monado's simulated headset, so reports from real setups are very welcome.
+
 ### Controls
 
 | Controller | Action |
@@ -85,7 +96,7 @@ make -f Makefiles/Makefile.Win32 release
 
 Then add `openxr_loader.dll` from the [Khronos OpenXR SDK](https://github.com/KhronosGroup/OpenXR-SDK-Source/releases). See [`.github/workflows/pcvr-windows.yml`](.github/workflows/pcvr-windows.yml) for the full packaging. Every push builds a zip; a push to `main` publishes it as the release for the version in `VERSION`.
 
-**Linux:** run `make -f Makefiles/Makefile.UNIX NET_BOARD=0`. This builds the same VR code on GLX and is handy for testing with [Monado](https://monado.freedesktop.org/). The OpenXR headers are vendored in `Src/Pkgs/openxr`, and the loader is loaded at run time, so non-VR use doesn't need it.
+**Linux:** run `make -f Makefiles/Makefile.UNIX NET_BOARD=0` (the CI builds on Ubuntu 22.04 and packages the tarball, see the workflow). This builds the same VR code on GLX and is handy for testing with [Monado](https://monado.freedesktop.org/). The OpenXR headers are vendored in `Src/Pkgs/openxr`, and the loader is loaded at run time, so non-VR use doesn't need it.
 
 Start it with `supermodel <rom.zip> -vr -window -res=992,768 -no-wide-screen`.
 
