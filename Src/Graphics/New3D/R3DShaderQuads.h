@@ -274,7 +274,7 @@ vec4 GetTextureValue();
 void WriteOutputs(vec4 colour, int layer);
 float Sqr(float a);
 float SqrLength(vec2 a);
-void ComputeSpotlight(vec4 spotEllipse, vec2 spotRange, float viewZ, out float lobeEffect, out float lobeFogEffect);
+void ComputeSpotlight(vec4 spotEllipse, vec2 spotRange, vec3 viewPos, out float lobeEffect, out float lobeFogEffect);
 
 void QuadraticInterpolation()
 {
@@ -417,7 +417,7 @@ void main()
 
 	float lobeEffect;
 	float lobeFogEffect;
-	ComputeSpotlight(spotEllipse, spotRange, fsViewVertex.z, lobeEffect, lobeFogEffect);
+	ComputeSpotlight(spotEllipse, spotRange, fsViewVertex, lobeEffect, lobeFogEffect);
 
 	if (lightEnabled) {
 		vec3   lightIntensity;

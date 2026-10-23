@@ -26,6 +26,12 @@ public:
 	// one) are remapped onto it, so they land where they appear on the flat screen.
 	void	SetVRReference		(bool valid, float l = 0, float r = 0, float t = 0, float b = 0)
 	{ m_vrRefValid = valid; m_vrRef[0] = l; m_vrRef[1] = r; m_vrRef[2] = t; m_vrRef[3] = b; }
+	// Stereo: spotlight ellipses are in (game screen pixel x this) units (1 = the 496x384 screen).
+	void	SetVRSpotScale		(float sx, float sy) { m_vrSpotScale[0] = sx; m_vrSpotScale[1] = sy; }
+	// PC VR: the gun in the player's hand is lit by its own light, fixed relative to the
+	// viewer (as on the game's own screens), not by the scene's sun. on = false restores
+	// the current viewport's lighting.
+	void	SetVRHandLight		(bool on);
 	void	Start				();
 	void	SetShader			(bool enable = true);
 	GLint	GetVertexAttribPos	(const std::string& attrib);
@@ -105,6 +111,9 @@ private:
 	bool			m_vrRefValid = false;
 	float			m_vrRef[4] = {0, 0, 0, 0};
 	bool			m_vrRemapOn = false;
+	float			m_vrSpotScale[2] = {1, 1};
+	float			m_vpLighting[6] = {0, 0, 0, 0, 0, 0};	// the current viewport's lighting uniform
+	GLint			m_locVRSpot = -1, m_locVRSpotGameFromEye = -1, m_locVRSpotTan = -1, m_locVRSpotScale = -1;
 	float			m_vrRemap[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 
 	// viewport uniform locations

@@ -8,9 +8,10 @@ Play Sega's 1997 light-gun arcade game **The Lost World: Jurassic Park** in VR. 
 
 - **Stereo 3D with head tracking.** The game's 3D world is drawn around you, beyond the edges of the original 4:3 screen, and the sky carries on past them.
 - **The controller is the gun.** You can aim and shoot anywhere in the headset's view, up to a screen-width past each edge of the original screen. The game has no crosshair during play, so a red ring shows where your gun hand points. The game's own cutscene sight is hidden, so there is only ever one.
-- **A gun in your hand.** Bring your own 3D model of the arcade gun and pick its colour, blue or red, in the menu (see below).
+- **A gun in your hand.** The heroes' rifle or the pistol from the game itself, read from your own ROM with their textures, or your own 3D model of the arcade gun in blue or red (see below). The gun is always drawn in front of the score and text.
 - **Recoil.** The controller vibrates while you fire.
 - **Steady 60 fps.** The game runs at its real speed whatever the headset's refresh rate, and the headset never waits for the emulator.
+- **Flashlight scenes** are lit correctly: the game's spotlight lies on the scene in both eyes.
 - **Cinema mode.** Play on a big screen in a dark room, flat or in 3D. The screen keeps its size when the game's camera zooms, can sit in a TV-cabinet frame whose inner walls softly reflect the picture, and an optional glow lets the picture's colours light up the room. The aiming ring is shown on the screen.
 - **Comfort options.** A vignette darkens the edges of your view during fast camera turns.
 - **Clean overlay.** The cutscene letterbox bars are removed, in the headset and on the cinema screen. The hit "static" and full-screen fades, like the CONTINUE screen's veil, fill your whole view. Score and text follow your head during play or stay fixed in the room.
@@ -58,19 +59,19 @@ In the options menu, point at an option and pull the trigger.
 | | Screen bezel | Off / On: the cinema screen sits in a TV-cabinet frame that reflects the picture |
 | | Screen glow | Off / Subtle / Strong: the picture lights up the room around the cinema screen |
 | **Gun** | Gun hand | Right / Left |
-| | Gun model in your hand | Off / Game (`Assets/VRGameGun.obj`) / Custom (`Assets/VRGunModel.obj`) |
-| | Gun colour | Blue / Red, for the Game model (shown when `VRGameGun.obj` is there) |
+| | Gun model in your hand | Off / Rifle / Pistol (both from the game) / Arcade (`Assets/VRGameGun.obj`) / Custom (`Assets/VRGunModel.obj`) |
+| | Gun colour | Blue / Red, for the Arcade model (shown when `VRGameGun.obj` is there) |
 | | Recoil vibration | Off / Light / Strong |
 | | Aim fine-tune | Nudge the aim left/right and up/down in 0.1° steps |
 | **Screen** | Score / timer / text | Fixed in the room / Follow head / Auto (head during play) |
 | | 2D graphics scaling | Soft / Sharp / Smooth edges |
-| | Hide player 2's PRESS START | On / Off (no effect in The Lost World) |
+| | Hide player 2's PRESS START | On / Off: player 2's INSERT COIN / Push 2P Start, in play and in cutscenes |
 | | Hit static over the whole view | On / Off (also full-screen fades) |
 | | Render resolution | 0.5× to 1.5× (applies on the next start) |
 
 The buttons at the bottom resume the game, re-centre the view or quit. Settings are saved to `Config/Supermodel.ini`. The menu's typeface is [Russo One](https://fonts.google.com/specimen/Russo+One) by Jovanny Lemonad (SIL Open Font License; the included Latin subset is renamed "LW Menu"). You can frame the menu with your own artwork, see `Assets/VR-MENU.txt`.
 
-**Gun models.** Both slots take a Wavefront OBJ (with an optional `.mtl`): `Assets/VRGameGun.obj` for *Game*, drawn in the blue or red chosen in the menu, and `Assets/VRGunModel.obj` for *Custom*, in its own material colours. Units are metres, the hand / grip at the origin, the barrel pointing along −Z and +Y up. The material's `Ks` (0–1) sets the strength of the sheen and `Ns` its sharpness (about 10 for matte plastic, 100 for glossy); `Kd` sets the colour of a Custom model.
+**Gun models.** *Rifle* (the heroes' gun from the cutscenes) and *Pistol* (the handgun from the how-to-play screen) are read from your own ROM while you play, with their textures; nothing from the game is included here. The textures are kept in `Saves/lostwsga.vrguntex` once the game has shown a gun, so it looks right from the start next time. *Arcade* and *Custom* take a Wavefront OBJ of your own (with an optional `.mtl`): `Assets/VRGameGun.obj` for *Arcade*, drawn in the blue or red chosen in the menu, and `Assets/VRGunModel.obj` for *Custom*, in its own material colours. Units are metres, the hand / grip at the origin, the barrel pointing along −Z and +Y up. The material's `Ks` (0–1) sets the strength of the sheen and `Ns` its sharpness (about 10 for matte plastic, 100 for glossy); `Kd` sets the colour of a Custom model.
 
 For the smoothest play in Virtual Desktop, set Synchronous Spacewarp to **Disabled** and the frame rate to 72, 90 or 120 Hz. All VR settings are in `Config/Supermodel.ini`, documented in [`Docs/PCVR.txt`](Docs/PCVR.txt).
 
@@ -107,6 +108,7 @@ Some findings about The Lost World that may help with other Model 3 games:
 - **No crosshair during play.** The red "X" sight is only drawn in cutscenes (VROM model `0x8A7B0C`); during play the game parks its sight markers (`0x8D836A`) outside the screen, where a VR view would see them. The VR build leaves them out of the headset image.
 - **The letterbox bars are models.** One black model (`0x8D8398`), drawn at the top and the bottom in a full-screen overlay viewport (tan ±0.352 × ±0.268). The 3D view itself stays full-screen in cutscenes.
 - **The camera zooms.** The main view's field of view changes during play and between cutscenes (half-width tangent 0.384 to 0.564), so anything sized from it, like a cinema screen, has to be decoupled.
+- **The guns are models too.** The heroes' rifle (`0x93CE1C`, a copy of the soldiers' `0x93FB35` with its own textures) and the how-to-play pistol (`0x8415A9`). Their polygons are double-sided (stored twice with flipped normals), so a renderer outside the game has to cull them by face normal as the game does.
 - **No SEGA logo at start-up.** After the warning and copyright screens the attract demo starts (around frame 924), or "Push Start" screens when credits are left; that is where the quick-boot snapshot is taken.
 
 More details and measurements are in [`Docs/PCVR.txt`](Docs/PCVR.txt).

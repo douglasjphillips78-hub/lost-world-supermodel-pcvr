@@ -2,6 +2,16 @@ Windows build of Supermodel with the OpenXR VR mode, set up for **The Lost World
 
 **Download** `LostWorldVR-windows.zip` below and unzip it. Put your own `lostwsga.zip` ROM set in the `ROMs` folder. Connect the headset, with Virtual Desktop, Quest Link or SteamVR as the active OpenXR runtime, and run `Play The Lost World VR.bat`. Full instructions are in `README-VR.txt` inside the zip and in the README. No ROMs or other game files are included.
 
+## v0.2.0
+
+- **The game's own guns in your hand.** Gun model › **Rifle** is the heroes' gun from the cutscenes and **Pistol** the handgun from the how-to-play screen, both read from your own ROM with their textures. Rifle is the default.
+- **Arcade gun** is now its own choice: your own cabinet gun model (`Assets/VRGameGun.obj`) in blue or red. *Custom* (`Assets/VRGunModel.obj`) stays.
+- **The gun is always in front** of the score and text, and keeps its textures in menus and cinema mode.
+- **Gun lighting:** the guns are lit so every side you turn towards you reads, with soft highlights; double-sided polygons no longer flicker light/dark.
+- **Flashlight scenes** (e.g. the night T-Rex) are lit correctly in the headset: the light lies on the scene in both eyes instead of floating in front of you.
+- **Hide player 2's PRESS START** now works in The Lost World: player 2's INSERT COIN / Push 2P Start is hidden in play and in cutscenes.
+- The guns' textures are kept in `Saves/lostwsga.vrguntex` (made from your ROM on your PC) once the game has shown them.
+
 ## v0.1.0 — first release
 
 - **Stereo 3D with head tracking**, the world drawn beyond the original 4:3 screen and the sky carried on past its edges.

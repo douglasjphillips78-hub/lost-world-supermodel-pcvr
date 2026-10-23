@@ -27,6 +27,7 @@
 #include <limits>
 #include <cstring>
 #include <unordered_map>
+#include <map>
 #include "R3DFloat.h"
 #include "Util/BitCast.h"
 
@@ -44,6 +45,8 @@ void SetVRFrameTarget(IVRFrameTarget* target) { s_vrTarget = target; }
 IVRFrameTarget* GetVRFrameTarget() { return s_vrTarget; }
 VRHandModel g_vrHandModel;
 VRHandMesh  g_vrHandMesh;
+std::vector<unsigned> g_vrHandPrefetch;
+std::string g_vrHandTexCachePath;
 std::vector<unsigned> g_vrParkedModels;
 std::vector<unsigned> g_vrHiddenModels;
 
@@ -391,6 +394,10 @@ bool CNew3D::RenderScene(int priority, bool renderOverlay, Layer layer)
 				continue;
 			}
 
+			if (m.vrOnly) {
+				m_r3dShader.SetVRHandLight(true);	// switched back after its meshes, below
+			}
+
 			for (auto &mesh : *m.meshes) {
 
 				if (mesh.highPriority) {
@@ -407,6 +414,9 @@ bool CNew3D::RenderScene(int priority, bool renderOverlay, Layer layer)
 				
 				m_r3dShader.SetMeshUniforms(&mesh);
 				glDrawArrays(m_primType, mesh.vboOffset, mesh.vertexCount);
+			}
+			if (m.vrOnly) {
+				m_r3dShader.SetVRHandLight(false);
 			}
 		}
 	}
@@ -870,6 +880,7 @@ void CNew3D::DrawVRFlat(IVRFrameTarget* vr)
 			}
 			m_vrEye = &t;
 			m_r3dShader.SetVREye(&t);
+			m_r3dShader.SetVRSpotScale(t.width / 496.0f, t.height / 384.0f);	// ellipses are in this target's pixels
 		}
 		m_vrFlatDraw = true;
 		DrawScene(m_vrFrameBuffers, false, t.fbo);
@@ -1008,6 +1019,151 @@ void CNew3D::VRMarkParkedModels()
 	}
 }
 
+// Texels of a hand model's textured meshes, copied from the game's texture RAM while they are
+// there (the game reloads texture RAM between stages). One rectangle per textured mesh, level 0.
+struct VRHandTexCapture
+{
+	std::vector<std::vector<UINT16>> rects;
+	unsigned version = 0;
+	bool fromGame = false;		// copied while the game drew the model itself (or loaded from the file)
+};
+static std::map<UINT32, VRHandTexCapture> s_vrHandTex;
+
+// The copies taken while the game drew the gun are kept in g_vrHandTexCachePath, so the gun has
+// the right textures from the start next time, whatever the game's texture RAM holds then.
+static void VRLoadHandTextures()
+{
+	static bool loaded = false;
+	if (loaded || g_vrHandTexCachePath.empty()) {
+		return;
+	}
+	loaded = true;
+	FILE* f = fopen(g_vrHandTexCachePath.c_str(), "rb");
+	if (!f) {
+		return;
+	}
+	char magic[8] = {};
+	UINT32 count = 0;
+	if (fread(magic, 1, 8, f) == 8 && !memcmp(magic, "VRGUNTX1", 8) && fread(&count, 4, 1, f) == 1 && count < 64) {
+		for (UINT32 i = 0; i < count; i++) {
+			UINT32 addr = 0, nrects = 0;
+			if (fread(&addr, 4, 1, f) != 1 || fread(&nrects, 4, 1, f) != 1 || nrects > 256) break;
+			VRHandTexCapture cap;
+			bool ok = true;
+			for (UINT32 r = 0; r < nrects && ok; r++) {
+				UINT32 n = 0;
+				ok = fread(&n, 4, 1, f) == 1 && n <= 1024 * 1024;
+				if (ok) {
+					std::vector<UINT16> t(n);
+					ok = fread(t.data(), 2, n, f) == n;
+					cap.rects.push_back(std::move(t));
+				}
+			}
+			if (!ok) break;
+			cap.fromGame = true;
+			cap.version = 1;
+			s_vrHandTex[addr] = std::move(cap);
+		}
+	}
+	fclose(f);
+}
+
+static void VRSaveHandTextures()
+{
+	if (g_vrHandTexCachePath.empty()) {
+		return;
+	}
+	FILE* f = fopen(g_vrHandTexCachePath.c_str(), "wb");
+	if (!f) {
+		return;
+	}
+	UINT32 count = 0;
+	for (const auto& e : s_vrHandTex) count += e.second.fromGame ? 1 : 0;
+	fwrite("VRGUNTX1", 1, 8, f);
+	fwrite(&count, 4, 1, f);
+	for (const auto& e : s_vrHandTex) {
+		if (!e.second.fromGame) continue;
+		const UINT32 addr = e.first, nrects = (UINT32)e.second.rects.size();
+		fwrite(&addr, 4, 1, f);
+		fwrite(&nrects, 4, 1, f);
+		for (const auto& t : e.second.rects) {
+			const UINT32 n = (UINT32)t.size();
+			fwrite(&n, 4, 1, f);
+			fwrite(t.data(), 2, n, f);
+		}
+	}
+	fclose(f);
+}
+
+// Model 3 texel -> RGBA8, as ExtractColour() in the shaders.
+static void VRDecodeTexel(int type, UINT16 v, unsigned char out[4])
+{
+	float c[4] = { 0, 0, 0, 0 };
+	auto lum = [&](float l, float a) { c[0] = c[1] = c[2] = l; c[3] = a; };
+	switch (type) {
+	case 0:  c[0] = ((v >> 10) & 31) / 31.f; c[1] = ((v >> 5) & 31) / 31.f; c[2] = (v & 31) / 31.f; c[3] = ((v >> 15) & 1) ? 0.f : 1.f; break;
+	case 1:  lum((v & 15) / 15.f, ((v >> 4) & 15) / 15.f); break;
+	case 2:  lum(((v >> 4) & 15) / 15.f, (v & 15) / 15.f); break;
+	case 3:  lum(((v >> 8) & 15) / 15.f, ((v >> 12) & 15) / 15.f); break;
+	case 4:  lum(((v >> 12) & 15) / 15.f, ((v >> 8) & 15) / 15.f); break;
+	case 5:  { const float l = (v & 255) / 255.f; lum(l, l == 1.f ? 0.f : 1.f); } break;
+	case 6:  { const float l = ((v >> 8) & 255) / 255.f; lum(l, l == 1.f ? 0.f : 1.f); } break;
+	case 7:  c[0] = ((v >> 12) & 15) / 15.f; c[1] = ((v >> 8) & 15) / 15.f; c[2] = ((v >> 4) & 15) / 15.f; c[3] = (v & 15) / 15.f; break;
+	case 8:  { const float l = (v & 15) / 15.f; lum(l, l == 1.f ? 0.f : 1.f); } break;
+	case 9:  { const float l = ((v >> 4) & 15) / 15.f; lum(l, l == 1.f ? 0.f : 1.f); } break;
+	case 10: { const float l = ((v >> 8) & 15) / 15.f; lum(l, l == 1.f ? 0.f : 1.f); } break;
+	case 11: { const float l = ((v >> 12) & 15) / 15.f; lum(l, l == 1.f ? 0.f : 1.f); } break;
+	default: break;
+	}
+	for (int i = 0; i < 4; i++) out[i] = (unsigned char)(c[i] * 255.f + 0.5f);
+}
+
+// Copies the textures of model 'addr' from texture RAM. 'm' is the game's own instance of it this
+// frame (its texture offset and page apply), or null. Without one, the copy is only taken once,
+// and only if the texels aren't blank (texture RAM is still empty right after power-on).
+void CNew3D::VRCaptureHandTextures(UINT32 addr, const std::vector<Mesh>& meshes, const Model* m)
+{
+	VRLoadHandTextures();
+	auto& cap = s_vrHandTex[addr];
+	if (!m && !cap.rects.empty()) {
+		return;
+	}
+	std::vector<std::vector<UINT16>> rects;
+	bool varied = false;
+	for (const auto& mesh : meshes) {
+		if (!mesh.textured) {
+			continue;
+		}
+		const int page = mesh.page ^ (m ? m->page : 0);
+		const int x0 = mesh.x + (m ? m->textureOffsetX : 0), y0 = mesh.y + (m ? m->textureOffsetY : 0);
+		const UINT16* t = m_textureRAM + (page & 1) * (2048 * 1024);
+		std::vector<UINT16> r((size_t)mesh.width * mesh.height);
+		for (int y = 0; y < mesh.height; y++) {
+			for (int x = 0; x < mesh.width; x++) {
+				r[(size_t)y * mesh.width + x] = t[((y0 + y) & 1023) * 2048 + ((x0 + x) & 2047)];
+			}
+		}
+		for (size_t i = 1; i < r.size() && !varied; i++) varied = r[i] != r[0];
+		rects.push_back(std::move(r));
+	}
+	if (rects.empty() || (!m && !varied)) {
+		return;
+	}
+	if (rects == cap.rects) {
+		if (m && !cap.fromGame) {
+			cap.fromGame = true;
+			VRSaveHandTextures();
+		}
+		return;
+	}
+	cap.rects.swap(rects);
+	cap.version++;
+	if (m) {
+		cap.fromGame = true;
+		VRSaveHandTextures();
+	}
+}
+
 void CNew3D::VRAddHandModels()
 {
 	m_vrHandNode = -1;
@@ -1030,20 +1186,56 @@ void CNew3D::VRAddHandModels()
 	if (meshes->empty() || !m_romBounds.count(addr) || !m_romCentroid.count(addr)) {
 		return;
 	}
-	// A copy as plain triangles in hand space, for the VR layer to draw itself (cinema mode).
+	// Textures of this gun and of the others the player may switch to, while the game has them.
+	{
+		std::vector<UINT32> addrs = { addr };
+		for (unsigned a : g_vrHandPrefetch) if (a != addr && IsVROMModel(a)) addrs.push_back(a);
+		for (UINT32 a : addrs) {
+			auto& ms = m_romMap[a];
+			if (!ms) {
+				ms = std::make_shared<std::vector<Mesh>>();
+				Model tmp;
+				tmp.meshes = ms;
+				tmp.dynamic = false;
+				m_cachingAddr = a;
+				CacheModel(&tmp, TranslateModelAddress(a));
+				m_cachingAddr = 0;
+			}
+			const Model* game = nullptr;
+			for (const auto& n : m_nodes) {
+				for (const auto& m : n.models) {
+					if (!m.vrOnly && m.vrAddr == a) { game = &m; break; }
+				}
+				if (game) break;
+			}
+			VRCaptureHandTextures(a, *ms, game);
+		}
+	}
+	// A copy in hand space for the VR layer, which draws the gun itself (after the 2D layers).
 	{
 		static UINT32 builtAddr = 0;
 		static float builtLength = 0.0f;
 		static bool builtFlip = false, builtUpside = false;
-		if (builtAddr != addr || builtLength != g_vrHandModel.length || builtFlip != g_vrHandModel.flip || builtUpside != g_vrHandModel.upsideDown) {
+		static unsigned builtTex = ~0u;
+		const VRHandTexCapture& cap = s_vrHandTex[addr];
+		if (builtAddr != addr || builtLength != g_vrHandModel.length || builtFlip != g_vrHandModel.flip
+			|| builtUpside != g_vrHandModel.upsideDown || builtTex != cap.version) {
 			float local[16];
 			const float s = VRHandLocal(m_romBounds[addr], m_romCentroid[addr], 1.0f, local);
 			std::vector<float> out;
+			std::vector<VRHandMeshPart> parts;
 			if (s > 0.0f) {
+				size_t texIdx = 0;
 				for (const auto& mesh : *meshes) {
+					const bool hasTex = mesh.textured && texIdx < cap.rects.size();
+					const std::vector<UINT16>* rect = hasTex ? &cap.rects[texIdx] : nullptr;
+					if (mesh.textured) texIdx++;
 					if (mesh.vboOffset < 0 || mesh.vboOffset + mesh.vertexCount > (int)m_polyBufferRom.size()) {
 						continue;
 					}
+					VRHandMeshPart part;
+					part.first = (int)(out.size() / 14);
+					part.count = mesh.vertexCount;
 					for (int i = 0; i < mesh.vertexCount; i++) {
 						const FVertex& v = m_polyBufferRom[mesh.vboOffset + i];
 						const float* p = v.base.pos;
@@ -1054,16 +1246,44 @@ void CNew3D::VRAddHandModels()
 							nq[r] = (local[r] * nn[0] + local[4 + r] * nn[1] + local[8 + r] * nn[2]) / s;
 						}
 						const float nl2 = std::sqrt(nq[0] * nq[0] + nq[1] * nq[1] + nq[2] * nq[2]);
+						// face normal: the VR layer culls by it like the game does, so of a
+						// double-sided polygon (stored twice, normals flipped) only the side
+						// facing the eye is drawn
+						const float* fn = v.faceNormal;
+						float fq[3];
+						for (int r = 0; r < 3; r++) fq[r] = local[r] * fn[0] + local[4 + r] * fn[1] + local[8 + r] * fn[2];
+						const float fl = std::sqrt(fq[0] * fq[0] + fq[1] * fq[1] + fq[2] * fq[2]);
 						for (int r = 0; r < 3; r++) out.push_back(q[r]);
 						for (int r = 0; r < 3; r++) out.push_back(nl2 > 1e-6f ? nq[r] / nl2 : 0.0f);
-						for (int r = 0; r < 3; r++) out.push_back(v.faceColour[r] / 255.0f);
+						// translator-map polygons hold small colour values the game scales by 16
+						// (GetColour() in the shaders), e.g. the rifle's: white times its texture
+						for (int r = 0; r < 3; r++) out.push_back(std::min(1.0f, v.faceColour[r] / 255.0f * (mesh.translatorMap ? 16.0f : 1.0f)));
+						out.push_back(v.base.texcoords[0]);
+						out.push_back(v.base.texcoords[1]);
+						for (int r = 0; r < 3; r++) out.push_back(fl > 1e-6f ? fq[r] / fl : 0.0f);
 					}
+					if (rect && mesh.width > 0 && mesh.height > 0 && rect->size() == (size_t)mesh.width * mesh.height) {
+						part.texWidth = mesh.width;
+						part.texHeight = mesh.height;
+						part.rgba.resize(rect->size() * 4);
+						for (size_t i = 0; i < rect->size(); i++) {
+							unsigned char* c = &part.rgba[i * 4];
+							VRDecodeTexel(mesh.format, (*rect)[i], c);
+							if (mesh.inverted) for (int k = 0; k < 3; k++) c[k] = 255 - c[k];
+						}
+						part.mirrorU = mesh.wrapModeU == Mesh::TexWrapMode::mirror || mesh.wrapModeU == Mesh::TexWrapMode::mirrorClamp;
+						part.mirrorV = mesh.wrapModeV == Mesh::TexWrapMode::mirror || mesh.wrapModeV == Mesh::TexWrapMode::mirrorClamp;
+						part.alphaTest = mesh.alphaTest || mesh.textureAlpha;
+					}
+					parts.push_back(std::move(part));
 				}
 			}
 			g_vrHandMesh.verts.swap(out);
+			g_vrHandMesh.parts.swap(parts);
 			g_vrHandMesh.version++;
 			builtAddr = addr; builtLength = g_vrHandModel.length;
 			builtFlip = g_vrHandModel.flip; builtUpside = g_vrHandModel.upsideDown;
+			builtTex = cap.version;
 		}
 	}
 	int best = -1;
@@ -1203,16 +1423,27 @@ void CNew3D::DrawEyes(bool newFrame)
 		m_totalXRes	= eye.width;
 		m_totalYRes	= eye.height;
 
-		// Spotlight ellipses are stored in window pixels; convert to this eye's pixels.
+		// Spotlight ellipses are stored in window pixels. In an eye they are a place on the game's
+		// own 496x384 screen: the shaders take each pixel back to the game camera and test it
+		// there, so the light lies on the same part of the world in both eyes (in the eye's own
+		// pixels it sat in a different place for each eye, and moved with the head).
 		std::vector<std::array<float, 4>> spots;
 		spots.reserve(m_nodes.size());
 		for (auto& n : m_nodes) {
 			float* s = n.viewport.spotEllipse;
 			spots.push_back({ s[0], s[1], s[2], s[3] });
-			s[0] = (s[0] - (float)xOffs) / xRatio * m_xRatio;
-			s[1] = (s[1] - (float)yOffs) / yRatio * m_yRatio;
-			s[2] = s[2] / xRatio * m_xRatio;
-			s[3] = s[3] / yRatio * m_yRatio;
+			s[0] = (s[0] - (float)xOffs) / xRatio;
+			s[1] = (s[1] - (float)yOffs) / yRatio;
+			s[2] = s[2] / xRatio;
+			s[3] = s[3] / yRatio;
+		}
+		m_r3dShader.SetVRSpotScale(1.0f, 1.0f);
+		{
+			float gameTan[4];
+			if (GetMainViewportTangents(gameTan[0], gameTan[1], gameTan[2], gameTan[3])) {
+				const float eyeTan[4] = { eye.tanLeft, eye.tanRight, eye.tanUp, eye.tanDown };
+				m_r3dScrollFog.SetVR(eye.view, eyeTan, (float)eye.width, (float)eye.height, gameTan, 1.0f, 1.0f);
+			}
 		}
 
 		m_vrEye = &eye;
@@ -1223,6 +1454,10 @@ void CNew3D::DrawEyes(bool newFrame)
 		DrawScene(m_vrFrameBuffers, false, eye.fbo);
 		m_vrHandDraw = false;
 		m_vpFilter = VPFilter::all;
+		{
+			const float none[4] = { 0, 0, 0, 0 };
+			m_r3dScrollFog.SetVR(nullptr, none, 0.0f, 0.0f, none, 1.0f, 1.0f);
+		}
 
 		m_r3dShader.SetVREye(nullptr);
 		m_vrEye = nullptr;

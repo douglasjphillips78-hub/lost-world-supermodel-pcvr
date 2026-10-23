@@ -897,7 +897,7 @@ static void VRReadSettings()
   v.hudLock     = std::clamp(s_runtime_config["VRHudLock"].ValueAsDefault<int>(v.hudLock), 0, 2);
   v.hideP2      = s_runtime_config["VRHideP2Prompt"].ValueAsDefault<bool>(v.hideP2);
   v.staticFill  = s_runtime_config["VRStaticFill"].ValueAsDefault<bool>(v.staticFill);
-  v.gunModel    = std::clamp(s_runtime_config["VRGunModel"].ValueAsDefault<int>(v.gunModel), 0, 2);
+  v.gunModel    = std::clamp(s_runtime_config["VRGunModel"].ValueAsDefault<int>(v.gunModel), 0, 4);
   v.gunColour   = std::clamp(s_runtime_config["VRGunColour"].ValueAsDefault<int>(v.gunColour), 0, 1);
   v.recoil      = std::clamp(s_runtime_config["VRRecoil"].ValueAsDefault<int>(v.recoil), 0, 2);
   v.aimNudgeX   = std::clamp(s_runtime_config["VRAimNudgeX"].ValueAsDefault<float>(v.aimNudgeX), -3.0f, 3.0f);
@@ -1345,6 +1345,9 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
   const VRGunCalibration *vrGunCal = nullptr;
   CModel3 *vrCalModel3 = nullptr;   // where vrGunCal is written (VR, or flat with SM_DBG_WIDEAIM)
   bool vrHideP2Tiles = false;
+  bool vrHideP2Always = false;   // not only during play (The Lost World: also cutscenes, attract)
+  unsigned vrPistolAddress = 0, vrRifleAddress = 0;   // a game's two ROM guns (VRGunModel 4 / 1)
+  float vrPistolLength = 0.22f, vrRifleLength = 0.9f;
   int vrFocusFrames = 0;
   std::string vrBootPath;
   int vrBootCheck = 0;              // frames left to check a loaded quick-boot snapshot
@@ -1458,7 +1461,25 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       // The gun held by the S.I.F.A.T. officers in the game's cutscenes (a VROM model, read from
       // the player's own ROM at run time). Tuning keys for other runtimes/controllers:
       // VRGunModelLength (metres), VRGunModelFlip, VRGunModelUpsideDown.
-      if (game.name == "lamachin")
+      // The Lost World: the scoped rifle the InGen team carries in the cutscenes.
+      if (game.name == "lostwsga")
+      {
+        // The heroes' gun (a copy of the soldiers' scoped rifle, VROM 0x93FB35, with their own
+        // textures), as seen in the cutscene in the InGen Site B lab hall ...
+        // ... and the pistol shown on the attract's how-to-play screen (VRGunModel = 4).
+        New3D::g_vrHandModel.address    = 0x0093CE1C;
+        New3D::g_vrHandModel.length     = s_runtime_config["VRGunModelLength"].ValueAsDefault<float>(0.9f);
+        vrPistolAddress = 0x008415A9;
+        vrPistolLength  = s_runtime_config["VRPistolModelLength"].ValueAsDefault<float>(0.22f);
+        vrRifleAddress  = New3D::g_vrHandModel.address;
+        vrRifleLength   = New3D::g_vrHandModel.length;
+        s_vrSettings.gunPistol = true;
+        New3D::g_vrHandPrefetch = { vrRifleAddress, vrPistolAddress };   // keep both guns' textures
+        New3D::g_vrHandTexCachePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Saves) << game.name << ".vrguntex";
+        New3D::g_vrHandModel.flip       = s_runtime_config["VRGunModelFlip"].ValueAsDefault<bool>(false);
+        New3D::g_vrHandModel.upsideDown = s_runtime_config["VRGunModelUpsideDown"].ValueAsDefault<bool>(false);
+      }
+      else if (game.name == "lamachin")
       {
         New3D::g_vrHandModel.address    = 0x004a19c8;
         New3D::g_vrHandModel.length     = s_runtime_config["VRGunModelLength"].ValueAsDefault<float>(0.75f);
@@ -1479,13 +1500,24 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
         if (s_runtime_config["VRPointer"].ValueAsDefault<bool>(false))
           New3D::g_vrHiddenModels.push_back(0x008A7B0C);
       }
-      vrHideP2Tiles = (game.name == "lamachin");
-      if (vrHideP2Tiles)
+      vrHideP2Tiles = (game.name == "lamachin" || game.name == "lostwsga");
+      vrHideP2Always = (game.name == "lostwsga");
+      if (game.name == "lamachin")
       {
         g_tileGenHide.layer = 0;
         g_tileGenHide.row0 = 45;  g_tileGenHide.row1 = 46;
         g_tileGenHide.col0 = 32;  g_tileGenHide.col1 = 63;
         g_tileGenHide.code0 = 0x3300;  g_tileGenHide.code1 = 0x333F;
+      }
+      else if (game.name == "lostwsga")
+      {
+        // The Lost World: player 2's blinking INSERT 1 COIN (small, rows 43-44) and Push 2P Start
+        // (large, rows 43-46), 2D layer 0, columns 40-63 (bottom right). CREDITS (rows 45-46,
+        // centre) and player 1's side stay. Hidden in cutscenes too, not only during play.
+        g_tileGenHide.layer = 0;
+        g_tileGenHide.row0 = 43;  g_tileGenHide.row1 = 46;
+        g_tileGenHide.col0 = 40;  g_tileGenHide.col1 = 63;
+        g_tileGenHide.code0 = 0x0001;  g_tileGenHide.code1 = 0xFFFF;
       }
       if (vrAsync)
       {
@@ -1509,15 +1541,14 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
         if (xr->LoadCustomGun(gunPath))
           InfoLog("VR: custom gun model loaded from %s", gunPath.c_str());
       }
-      // The game's gun as a model file, for games whose gun isn't read from the ROM (The Lost
-      // World): Assets/VRGameGun.obj, same format. "Game" in the menu, in blue or red.
-      if (New3D::g_vrHandModel.address == 0)
+      // An arcade cabinet gun as a model file (optional): Assets/VRGameGun.obj, same format.
+      // "Arcade" in the menu (VRGunModel = 3), in blue or red like the cabinet's two guns.
       {
         const std::string gunPath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Assets) << "VRGameGun.obj";
         if (xr->LoadGameGun(gunPath))
         {
           s_vrSettings.gunColours = true;
-          InfoLog("VR: game gun model loaded from %s", gunPath.c_str());
+          InfoLog("VR: arcade gun model loaded from %s", gunPath.c_str());
         }
       }
     }
@@ -1653,11 +1684,18 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
         }
       }
       ApplyVRInput(*xr);
-      g_tileGenHide.on = vrHideP2Tiles && s_vrSettings.hideP2 && xr->InPlay();
+      g_tileGenHide.on = vrHideP2Tiles && s_vrSettings.hideP2 && (vrHideP2Always || xr->InPlay());
       // gun model: in the gun hand
       xr->SetGunHands(!s_vrSettings.gunModel ? 0 : (1 << s_vrGunHand));
       xr->SetPointerHand(s_vrGunHand);   // one pointer ring: the gun hand's
-      xr->SetGunMode(s_vrSettings.gunModel);
+      // VRGunModel 4: the game's second ROM gun (a pistol); drawn like the game's gun
+      if (vrPistolAddress)
+      {
+        const bool pistol = s_vrSettings.gunModel == 4;
+        New3D::g_vrHandModel.address = pistol ? vrPistolAddress : vrRifleAddress;
+        New3D::g_vrHandModel.length  = pistol ? vrPistolLength : vrRifleLength;
+      }
+      xr->SetGunMode(s_vrSettings.gunModel == 4 ? 1 : s_vrSettings.gunModel);
       xr->SetGunColour(s_vrSettings.gunColour);
 
       // Options menu: left controller's menu button opens/closes it; the game pauses meanwhile.

@@ -35,6 +35,12 @@ namespace New3D {
 
 		void DrawScrollFog(float rbga[4], float attenuation, float ambient, float spotRGB[3], float spotEllipse[4]);
 
+		// PC VR: while drawing a headset eye, the spotlight-on-fog ellipse is a place on the game's
+		// screen (ellipse in game screen pixels x scale). eyeView: the eye's view matrix,
+		// eyeTan: its left/right/up/down tangents, eyeSize: its framebuffer size, gameTan: the
+		// game screen's left/right/top/bottom tangents. SetVR(nullptr, ...) turns it off.
+		void SetVR(const float* eyeView, const float eyeTan[4], float eyeW, float eyeH, const float gameTan[4], float scaleX, float scaleY);
+
 	private:
 
 		void AllocResources();
@@ -49,6 +55,14 @@ namespace New3D {
 		GLint m_locFogAmbient;
 		GLint m_locSpotFogColor;
 		GLint m_locSpotEllipse;
+		GLint m_locVRSpot, m_locVRInvRot, m_locVREyeTan, m_locVREyeSize, m_locVRGameTan, m_locVRScale;
+
+		bool  m_vrOn = false;
+		float m_vrInvRot[9] = {};
+		float m_vrEyeTan[4] = {};
+		float m_vrEyeSize[2] = {};
+		float m_vrGameTan[4] = {};
+		float m_vrScale[2] = {1.f, 1.f};
 
 		GLuint m_vao;
 	};

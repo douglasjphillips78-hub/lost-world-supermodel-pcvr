@@ -815,17 +815,23 @@ const char* kGunVS = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNrm;
 layout(location = 2) in vec3 aCol;
+layout(location = 3) in vec2 aUv;
+layout(location = 4) in vec3 aFaceNrm;
 uniform mat4 uMvp;
 uniform mat4 uModel;
 out vec3 vNrm;
 out vec3 vCol;
 out vec3 vWorld;
+out vec2 vUv;
+out vec3 vFaceNrm;
 void main()
 {
+  vFaceNrm = mat3(uModel) * aFaceNrm;
   vec4 w = uModel * vec4(aPos, 1.0);
   vWorld = w.xyz;
   vNrm = mat3(uModel) * aNrm;
   vCol = aCol;
+  vUv = aUv;
   gl_Position = uMvp * vec4(aPos, 1.0);
 }
 )";
@@ -836,7 +842,12 @@ const char* kGunFS = R"(#version 330 core
 in vec3 vNrm;
 in vec3 vCol;
 in vec3 vWorld;
+in vec2 vUv;
+in vec3 vFaceNrm;
 uniform vec3 uEye;
+uniform float uCullByNormal;   // 1: the game's guns - draw only the side whose face normal faces the eye
+uniform sampler2D uGunTex;
+uniform vec2 uTextured;  // x = 1: textured part (game's gun from the ROM); y = 1: alpha-tested
 uniform sampler2D uScreen;
 uniform float uUseScreen;
 uniform vec2 uSpec;      // specular strength (Ks), shininess (Ns)
@@ -855,8 +866,15 @@ vec3 room(vec3 d, vec3 sc, float rough)
 void main()
 {
   vec3 n = normalize(vNrm);
-  if (!gl_FrontFacing) n = -n;
   vec3 v = normalize(uEye - vWorld);
+  if (uCullByNormal > 0.5) {
+    if (dot(vFaceNrm, uEye - vWorld) < 0.0)
+      discard;            // the back side (the game culls by the face normal too)
+    if (dot(n, v) < 0.0)
+      n = -n;             // smooth normals bent away at a silhouette
+  } else if (!gl_FrontFacing) {
+    n = -n;
+  }
   vec3 sc = vec3(0.75, 0.78, 0.85);
   if (uUseScreen > 0.5)
     sc = clamp(textureLod(uScreen, vec2(0.5), 16.0).rgb * 1.6 + 0.12, 0.0, 1.0);
@@ -865,7 +883,21 @@ void main()
   float wt = max(dot(n, lt) * 0.6 + 0.4, 0.0);  // wrapped: plastic scatters a little
   float ws = max(dot(n, ls) * 0.7 + 0.3, 0.0);
   vec3 col = uTint.a > 0.5 ? uTint.rgb : vCol;
+  if (uTextured.x > 0.5) {
+    vec4 t = texture(uGunTex, vUv);
+    if (uTextured.y > 0.5 && t.a < 0.5)
+      discard;
+    col *= t.rgb;
+  }
   vec3 diffuse = col * (vec3(0.18) + 0.55 * wt * wt * vec3(1.0) + 0.70 * ws * ws * sc);
+  if (uCullByNormal > 0.5) {
+    // The game's guns: dark gun-metal colours (face colour x texture), lit in the game by a
+    // strong scene light. Here a soft key light from just above the eye plus a fill, so every
+    // face you look at reads, instead of the room light leaving the sides black.
+    vec3 key = normalize(v + vec3(0.0, 0.6, 0.0));
+    float k = max(dot(n, key), 0.0);
+    diffuse = col * (0.55 + 1.05 * k) * mix(vec3(1.0), sc, 0.25);
+  }
   float ns = max(uSpec.y, 1.0);
   float norm = (ns + 8.0) / 25.0;               // energy-normalised Blinn
   float s1 = pow(max(dot(n, normalize(ls + v)), 0.0), ns) * norm;
@@ -919,6 +951,9 @@ bool DesktopXR::CreateShaders()
     m_uGunUseScreen = glGetUniformLocation(m_gunProgram, "uUseScreen");
     m_uGunSpec      = glGetUniformLocation(m_gunProgram, "uSpec");
     m_uGunTint      = glGetUniformLocation(m_gunProgram, "uTint");
+    m_uGunTex       = glGetUniformLocation(m_gunProgram, "uGunTex");
+    m_uGunTextured  = glGetUniformLocation(m_gunProgram, "uTextured");
+    m_uGunCull      = glGetUniformLocation(m_gunProgram, "uCullByNormal");
   }
   m_bezelProgram = LinkProgram(kBezelVS, kBezelFS);
   if (m_bezelProgram) {
@@ -989,6 +1024,9 @@ void DesktopXR::Shutdown()
     New3D::SetVRFrameTarget(nullptr);
   if (m_lineProgram) glDeleteProgram(m_lineProgram);
   if (m_bezelProgram) glDeleteProgram(m_bezelProgram);
+  for (auto& p : m_gunParts)
+    if (p.tex) glDeleteTextures(1, &p.tex);
+  m_gunParts.clear();
   if (m_gunProgram) glDeleteProgram(m_gunProgram);
   for (int i = 0; i < 3; i++) {
     if (m_gunVbo[i]) glDeleteBuffers(1, &m_gunVbo[i]);
@@ -1733,6 +1771,10 @@ int DesktopXR::EffectiveGunMode() const
 {
   if (m_gunMode == 2 && !CustomGunLoaded())
     return 1;   // no custom model: fall back to the game's gun
+  if (m_gunMode == 3 && !m_gameGunFileLoaded)
+    return 1;   // no arcade gun file: the game's gun
+  if (m_gunMode == 1 && New3D::g_vrHandModel.address == 0 && m_gameGunFileLoaded)
+    return 3;   // no gun in the game's ROM: the arcade gun file stands in
   return m_gunMode;
 }
 
@@ -1760,19 +1802,13 @@ int DesktopXR::HandPoses(New3D::VRHandPose* out, int max) const
 {
   // The game's gun inside the 3D scene: only during play, never in cinema mode (the VR layer
   // draws the guns itself there) and not when the custom model is chosen.
-  int n = 0;
-  if (!m_inPlay || m_config.cinema || m_menuOpen || EffectiveGunMode() != 1 || GameGunFromFile())
-    return 0;   // with the menu open the VR layer draws the guns, in the same space as the menu
-  for (int h = 0; h < 2 && n < max; h++) {
-    if (!(m_gunHands & (1 << h)) || !HandMatrix(h, out[n].pose))
-      continue;
-    out[n].unitsPerMeter = m_config.worldUnitsPerMeter;
-    n++;
-  }
-  return n;
+  // Not any more: the VR layer always draws the guns itself, after the 2D layers (score, text),
+  // so the gun in the hand is in front of them, and with the same look in play, menus and cinema.
+  (void)out; (void)max;
+  return 0;
 }
 
-static void UploadGun(GLuint& vao, GLuint& vbo, GLsizei& count, const std::vector<float>& v)
+static void UploadGun(GLuint& vao, GLuint& vbo, GLsizei& count, const std::vector<float>& v, int stride = 9)
 {
   if (!vao) glGenVertexArrays(1, &vao);
   if (!vbo) glGenBuffers(1, &vbo);
@@ -1781,23 +1817,35 @@ static void UploadGun(GLuint& vao, GLuint& vbo, GLsizei& count, const std::vecto
   glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(v.size() * sizeof(float)), v.empty() ? nullptr : v.data(), GL_STATIC_DRAW);
   for (int a = 0; a < 3; a++) {
     glEnableVertexAttribArray(a);
-    glVertexAttribPointer(a, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (const void*)(a * 3 * sizeof(float)));
+    glVertexAttribPointer(a, 3, GL_FLOAT, GL_FALSE, stride * sizeof(float), (const void*)(a * 3 * sizeof(float)));
+  }
+  if (stride >= 11) {
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, stride * sizeof(float), (const void*)(9 * sizeof(float)));
+  } else {
+    glDisableVertexAttribArray(3);
+    glVertexAttrib2f(3, 0.f, 0.f);
+  }
+  if (stride >= 14) {
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, stride * sizeof(float), (const void*)(11 * sizeof(float)));
+  } else {
+    glDisableVertexAttribArray(4);
+    glVertexAttrib3f(4, 0.f, 0.f, 0.f);
   }
   glBindVertexArray(0);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
-  count = (GLsizei)(v.size() / 9);
+  count = (GLsizei)(v.size() / stride);
 }
 
 void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
 {
   const int mode = EffectiveGunMode();
-  // Shown from the moment the game starts (title, menus, cutscenes, play). Only the game's gun
-  // during play in the normal view is drawn by New3D, inside the scene.
+  // Shown from the moment the game starts (title, menus, cutscenes, play), always drawn here,
+  // after the 2D layers.
   if (!m_gunProgram || mode == 0 || !m_gunHands)
     return;
-  const bool gameFile = mode == 1 && GameGunFromFile();
-  if (mode == 1 && !gameFile && !m_config.cinema && m_inPlay && !(m_menuOpen && m_menuTex))
-    return;
+  const bool gameFile = mode == 3;
   const int slot = mode == 2 ? 1 : (gameFile ? 2 : 0);
   if (slot == 2 && !m_gameGunFile.empty()) {
     UploadGun(m_gunVao[2], m_gunVbo[2], m_gunCount[2], m_gameGunFile);
@@ -1808,7 +1856,31 @@ void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
     std::vector<float>().swap(m_customGun);
   }
   if (slot == 0 && m_gunVersion != New3D::g_vrHandMesh.version) {
-    UploadGun(m_gunVao[0], m_gunVbo[0], m_gunCount[0], New3D::g_vrHandMesh.verts);
+    UploadGun(m_gunVao[0], m_gunVbo[0], m_gunCount[0], New3D::g_vrHandMesh.verts, 14);
+    // one texture per textured part, from the game's texture RAM (see New3D::VRAddHandModels)
+    for (auto& p : m_gunParts)
+      if (p.tex) glDeleteTextures(1, &p.tex);
+    m_gunParts.clear();
+    for (const auto& src : New3D::g_vrHandMesh.parts) {
+      GunPart p;
+      p.first = src.first;
+      p.count = src.count;
+      p.alphaTest = src.alphaTest;
+      if (!src.rgba.empty()) {
+        glGenTextures(1, &p.tex);
+        glBindTexture(GL_TEXTURE_2D, p.tex);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, src.texWidth, src.texHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, src.rgba.data());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, src.mirrorU ? GL_MIRRORED_REPEAT : GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, src.mirrorV ? GL_MIRRORED_REPEAT : GL_REPEAT);
+        glBindTexture(GL_TEXTURE_2D, 0);
+      }
+      m_gunParts.push_back(p);
+    }
     m_gunVersion = New3D::g_vrHandMesh.version;
   }
   if (m_gunCount[slot] <= 0)
@@ -1852,7 +1924,7 @@ void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
   else if (slot == 2)
     glUniform2f(m_uGunSpec, m_gameFileSpec, m_gameFileShine);
   else
-    glUniform2f(m_uGunSpec, 0.25f, 20.f);   // the game's gun: satin
+    glUniform2f(m_uGunSpec, 0.45f, 32.f);   // the game's guns (from the ROM): glossy, with soft highlights
   // The game gun from a file comes in the arcade's two gun colours (menu: Gun colour).
   if (slot == 2)
     glUniform4f(m_uGunTint, m_gunColour == 1 ? 0.88f : 0.07f, m_gunColour == 1 ? 0.07f : 0.26f,
@@ -1862,6 +1934,9 @@ void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, useScreen ? m_cinemaTex[v] : 0);
   glUniform1i(m_uGunScreen, 0);
+  glUniform1i(m_uGunTex, 1);
+  glUniform2f(m_uGunTextured, 0.f, 0.f);
+  glUniform1f(m_uGunCull, slot == 0 ? 1.f : 0.f);
   glBindVertexArray(m_gunVao[slot]);
   const float s = m_config.worldUnitsPerMeter;
   for (int h = 0; h < 2; h++) {
@@ -1874,7 +1949,19 @@ void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
     New3D::VRMul4(pv, pose, mvp);
     glUniformMatrix4fv(m_uGunMvp, 1, GL_FALSE, mvp);
     glUniformMatrix4fv(m_uGunModel, 1, GL_FALSE, pose);
-    glDrawArrays(GL_TRIANGLES, 0, m_gunCount[slot]);
+    if (slot == 0 && !m_gunParts.empty()) {
+      glActiveTexture(GL_TEXTURE1);
+      for (const auto& p : m_gunParts) {
+        glBindTexture(GL_TEXTURE_2D, p.tex);
+        glUniform2f(m_uGunTextured, p.tex ? 1.f : 0.f, p.alphaTest ? 1.f : 0.f);
+        glDrawArrays(GL_TRIANGLES, p.first, p.count);
+      }
+      glBindTexture(GL_TEXTURE_2D, 0);
+      glActiveTexture(GL_TEXTURE0);
+      glUniform2f(m_uGunTextured, 0.f, 0.f);
+    } else {
+      glDrawArrays(GL_TRIANGLES, 0, m_gunCount[slot]);
+    }
   }
   glBindVertexArray(0);
   glBindTexture(GL_TEXTURE_2D, 0);
@@ -1883,12 +1970,6 @@ void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
   glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   m_gunDepthValid = true;
-}
-
-bool DesktopXR::GameGunFromFile() const
-{
-  // only when the game's own gun can't be read from the ROM (no VROM model known for it)
-  return m_gameGunFileLoaded && New3D::g_vrHandModel.address == 0;
 }
 
 bool DesktopXR::LoadCustomGun(const std::string& objPath, int slot)

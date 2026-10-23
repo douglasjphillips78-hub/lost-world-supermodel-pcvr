@@ -403,3 +403,4 @@ Assets/VRMenuFrame.txt
 # Personal gun models (private, never in the repo)
 Assets/VRGunModel.*
 Assets/VRGameGun.*
+*.vrguntex

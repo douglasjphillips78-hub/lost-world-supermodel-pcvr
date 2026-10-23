@@ -335,6 +335,7 @@ private:
 	bool			m_vrHandDraw = false;		// true while drawing a headset eye
 	bool			m_vrFlatDraw = false;		// true while drawing the cinema screen picture
 	void			VRAddHandModels();
+	void			VRCaptureHandTextures(UINT32 addr, const std::vector<Mesh>& meshes, const Model* m);
 	void			VRPoseHandModels(IVRFrameTarget* vr);
 	bool			m_vrSceneValid = false;	// nodes/VBO hold a drawable frame
 	float			m_vrCamTurn = 0.0f;			// degrees since the previous game frame

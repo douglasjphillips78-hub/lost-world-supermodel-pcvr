@@ -157,16 +157,16 @@ public:
     m_hideLetterbox = hideLetterbox;
   }
 
-  // Gun model drawn in the hands: 0 off, 1 the game's gun, 2 a custom OBJ (Assets/VRGunModel.obj).
+  // Gun model drawn in the hands: 0 off, 1 the game's gun, 2 a custom OBJ (Assets/VRGunModel.obj),
+  // 3 the arcade gun OBJ (Assets/VRGameGun.obj).
   // The game's gun is drawn inside the 3D scene; in cinema mode, and for the custom model, the
   // VR layer draws it itself, in the room.
   void SetGunMode(int mode) { m_gunMode = mode; }
   bool LoadCustomGun(const std::string& objPath, int slot = 1);   // false = no file / nothing usable in it
-  // The game's gun as a model file (Assets/VRGameGun.obj), for games whose own gun isn't
-  // available from the ROM: chosen with "Game" in the menu, drawn in the colour set below.
+  // An arcade cabinet gun as a model file (Assets/VRGameGun.obj): gun mode 3 ("Arcade"),
+  // drawn in the colour set below.
   bool LoadGameGun(const std::string& objPath) { return LoadCustomGun(objPath, 2); }
-  void SetGunColour(int colour) { m_gunColour = colour; }   // game gun from file: 0 blue, 1 red
-  bool GameGunFromFile() const;
+  void SetGunColour(int colour) { m_gunColour = colour; }   // arcade gun: 0 blue, 1 red
   bool CustomGunLoaded() const { return !m_customGun.empty() || m_gunCount[1] > 0; }
 
   int EyeWidth()  const { return m_eyes[0].width; }
@@ -307,9 +307,12 @@ private:
   bool   m_gameGunFileLoaded = false;
   int    m_gunColour = 0;                      // game gun from file: 0 blue, 1 red
   GLint  m_uGunTint = -1;
+  GLint  m_uGunTex = -1, m_uGunTextured = -1, m_uGunCull = -1;
   GLuint m_gunProgram = 0, m_gunVao[3] = {0, 0, 0}, m_gunVbo[3] = {0, 0, 0};   // 0 = game gun (ROM), 1 = custom, 2 = game gun (file)
   GLsizei m_gunCount[3] = {0, 0, 0};
   unsigned m_gunVersion = ~0u;
+  struct GunPart { int first = 0, count = 0; GLuint tex = 0; bool alphaTest = false; };
+  std::vector<GunPart> m_gunParts;             // game gun (ROM): one draw per mesh, textured ones with their texture
   GLint  m_uGunMvp = -1, m_uGunModel = -1, m_uGunEye = -1, m_uGunScreen = -1, m_uGunUseScreen = -1, m_uGunSpec = -1;
   float  m_customSpec = 0.5f, m_customShine = 90.f;   // Ks / Ns of the custom model's material
   float  m_gameFileSpec = 0.35f, m_gameFileShine = 40.f;   // ... and of the game gun from a file

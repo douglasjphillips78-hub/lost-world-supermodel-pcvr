@@ -20,9 +20,12 @@ struct VRSettings
   int   hudLock     = 2;      // 2D layer: 0 room, 1 head, 2 head during play
   bool  hideP2      = true;   // hide player 2's PRESS START BUTTON during play
   bool  staticFill  = true;   // hit static over the whole view
-  int   gunModel    = 1;      // gun model in your hand: 0 off, 1 the game's gun, 2 your own (Assets/VRGunModel.obj)
-  int   gunColour   = 0;      // the game's gun when it comes from a file (Assets/VRGameGun.obj): 0 blue, 1 red
-  bool  gunColours  = false;  // the game's gun has colour choices (set by the program, not saved)
+  int   gunModel    = 1;      // gun model in your hand: 0 off, 1 the game's gun, 2 your own (Assets/VRGunModel.obj),
+                              // 3 the arcade gun (Assets/VRGameGun.obj), 4 the game's pistol
+  int   gunColour   = 0;      // the arcade gun's colour: 0 blue, 1 red
+  bool  gunColours  = false;  // an arcade gun file is there (set by the program, not saved)
+  bool  gunPistol   = false;  // the game has a second gun in its ROM, a pistol (VRGunModel = 4;
+                              // "Game" is then called "Rifle"); set by the program, not saved
   int   recoil      = 1;      // controller vibration while firing: 0 off, 1 light, 2 strong
   float aimNudgeX   = 0.0f;   // aim fine-tune, degrees (+ = right)
   float aimNudgeY   = 0.0f;   // aim fine-tune, degrees (+ = up)

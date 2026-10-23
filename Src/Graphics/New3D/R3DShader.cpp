@@ -142,6 +142,10 @@ bool R3DShader::LoadShader(const char* vertexShader, const char* fragmentShader)
 	m_locSpotRange			= glGetUniformLocation(m_shaderProgram, "spotRange");
 	m_locSpotColor			= glGetUniformLocation(m_shaderProgram, "spotColor");
 	m_locSpotFogColor		= glGetUniformLocation(m_shaderProgram, "spotFogColor");
+	m_locVRSpot				= glGetUniformLocation(m_shaderProgram, "vrSpot");
+	m_locVRSpotGameFromEye	= glGetUniformLocation(m_shaderProgram, "vrSpotGameFromEye");
+	m_locVRSpotTan			= glGetUniformLocation(m_shaderProgram, "vrSpotTan");
+	m_locVRSpotScale		= glGetUniformLocation(m_shaderProgram, "vrSpotScale");
 	m_locModelScale			= glGetUniformLocation(m_shaderProgram, "modelScale");
 	m_locNodeAlpha			= glGetUniformLocation(m_shaderProgram, "nodeAlpha");
 
@@ -358,16 +362,20 @@ void R3DShader::SetViewportUniforms(const Viewport *vp)
 	// Stereo applies only to the main (full-width) viewport; small sub-viewports stay head-locked.
 	m_vrApply = m_vrEye && VRIsMainViewport(vp->vpX, vp->vpWidth, vp->vpHeight);
 	m_vrRemapOn = false;
-	if (m_vrApply && m_vrRefValid && vp->vpWidth > 0 && vp->vpHeight > 0) {
-		// This viewport's tangents extended to the whole 496x384 screen (letterboxed views
-		// cover only part of it), then an affine map of its screen onto the reference's:
-		// tan' = refL + (tan - l) * k, applied in view space as x' = k*x - (refL - k*l)*z.
+	// This viewport's tangents extended to the whole 496x384 screen (letterboxed views cover
+	// only part of it).
+	float l = 0.f, r = 0.f, t = 0.f, b = 0.f;
+	if (vp->vpWidth > 0 && vp->vpHeight > 0) {
 		const float dx = (vp->angle_right - vp->angle_left) / vp->vpWidth;
 		const float dy = (vp->angle_top - vp->angle_bottom) / vp->vpHeight;
-		const float l = vp->angle_left - vp->vpX * dx;
-		const float r = l + 496.0f * dx;
-		const float t = vp->angle_top + vp->vpY * dy;
-		const float b = vp->angle_bottom - (384.0f - vp->vpY - vp->vpHeight) * dy;
+		l = vp->angle_left - vp->vpX * dx;
+		r = l + 496.0f * dx;
+		t = vp->angle_top + vp->vpY * dy;
+		b = vp->angle_bottom - (384.0f - vp->vpY - vp->vpHeight) * dy;
+	}
+	if (m_vrApply && m_vrRefValid && vp->vpWidth > 0 && vp->vpHeight > 0) {
+		// An affine map of this viewport's screen onto the reference's:
+		// tan' = refL + (tan - l) * k, applied in view space as x' = k*x - (refL - k*l)*z.
 		const float L = m_vrRef[0], R = m_vrRef[1], T = m_vrRef[2], B = m_vrRef[3];
 		const float eps = 1e-4f;
 		if ((std::fabs(l - L) > eps || std::fabs(r - R) > eps || std::fabs(t - T) > eps || std::fabs(b - B) > eps) &&
@@ -391,13 +399,32 @@ void R3DShader::SetViewportUniforms(const Viewport *vp)
 		for (int i = 0; i < 6; i++) lighting[i] = vp->lightingParams[i];
 		VRRotate3(m_vrEye->view, vp->lightingParams, lighting);
 		glUniform3fv(m_locLighting, 2, lighting);
+		for (int i = 0; i < 6; i++) m_vpLighting[i] = lighting[i];
 	}
 	else {
 		glUniform3fv(m_locLighting, 2, vp->lightingParams);
+		for (int i = 0; i < 6; i++) m_vpLighting[i] = vp->lightingParams[i];
 	}
 	glUniform1i(m_locSunClamp, vp->sunClamp);
 	glUniform1i(m_locIntensityClamp, vp->intensityClamp);
 	glUniform4fv(m_locSpotEllipse, 1, vp->spotEllipse);
+	// Stereo: the spotlight ellipse is tested on the game's screen, not in the eye's pixels.
+	// Eye space -> game camera (after the remap above) is the inverse of the eye's rigid view.
+	const bool vrSpot = m_vrApply && std::fabs(r - l) > 1e-4f && std::fabs(t - b) > 1e-4f;
+	glUniform1i(m_locVRSpot, vrSpot ? 1 : 0);
+	if (vrSpot) {
+		const float* V = m_vrEye->view;
+		float inv[16] = { V[0], V[4], V[8], 0.f,  V[1], V[5], V[9], 0.f,  V[2], V[6], V[10], 0.f,  0.f, 0.f, 0.f, 1.f };
+		inv[12] = -(V[0] * V[12] + V[1] * V[13] + V[2] * V[14]);
+		inv[13] = -(V[4] * V[12] + V[5] * V[13] + V[6] * V[14]);
+		inv[14] = -(V[8] * V[12] + V[9] * V[13] + V[10] * V[14]);
+		glUniformMatrix4fv(m_locVRSpotGameFromEye, 1, GL_FALSE, inv);
+		if (m_vrRemapOn)
+			glUniform4f(m_locVRSpotTan, m_vrRef[0], m_vrRef[1], m_vrRef[2], m_vrRef[3]);
+		else
+			glUniform4f(m_locVRSpotTan, l, r, t, b);
+		glUniform2f(m_locVRSpotScale, m_vrSpotScale[0], m_vrSpotScale[1]);
+	}
 	glUniform2fv(m_locSpotRange, 1, vp->spotRange);
 	glUniform3fv(m_locSpotColor, 1, vp->spotColor);
 	glUniform3fv(m_locSpotFogColor, 1, vp->spotFogColor);
@@ -407,6 +434,21 @@ void R3DShader::SetViewportUniforms(const Viewport *vp)
 	glUniform1i(m_locHardwareStep, vp->hardwareStep);
 
 	glUniform1f(m_locCota, vp->cota);
+}
+
+void R3DShader::SetVRHandLight(bool on)
+{
+	if (!on) {
+		glUniform3fv(m_locLighting, 2, m_vpLighting);
+		return;
+	}
+	// Light from in front of and above the viewer, slightly from the left (view space:
+	// x right, y up, z towards the viewer) - like the how-to-play screen, where the gun's
+	// slide catches a bright highlight. Strong key light, moderate ambient.
+	const float x = -0.25f, y = 0.55f, z = 0.80f;
+	const float len = std::sqrt(x * x + y * y + z * z);
+	const float light[6] = { x / len, y / len, z / len, 0.95f, 0.38f, 0.0f };
+	glUniform3fv(m_locLighting, 2, light);
 }
 
 void R3DShader::SetModelStates(const Model* model)

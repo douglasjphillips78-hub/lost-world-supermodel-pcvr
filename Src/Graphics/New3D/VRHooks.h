@@ -14,6 +14,7 @@
 // So head tracking is simply: modelMat' = eyeView * modelMat.
 
 #include <vector>
+#include <string>
 
 namespace New3D {
 
@@ -83,14 +84,33 @@ extern std::vector<unsigned> g_vrParkedModels;
 extern std::vector<unsigned> g_vrHiddenModels;
 
 // The same hand model as plain triangles in "hand space" (metres; barrel along -Z, +Y up, grip at
-// the origin), for the VR layer to draw it itself (cinema mode). 9 floats per vertex: position,
-// normal, colour. 'version' changes whenever it is rebuilt.
+// the origin), for the VR layer to draw it itself, always after the 2D layers so the gun is in
+// front of them. 14 floats per vertex: position, normal, colour, texture u v, face normal. One part per ROM
+// mesh; a textured part carries its texture, decoded from the game's texture RAM (RGBA8, level 0).
+// 'version' changes whenever it is rebuilt.
+struct VRHandMeshPart
+{
+	int					first = 0, count = 0;	// vertices
+	int					texWidth = 0, texHeight = 0;
+	std::vector<unsigned char> rgba;			// empty: untextured
+	bool				mirrorU = false, mirrorV = false;
+	bool				alphaTest = false;
+};
 struct VRHandMesh
 {
 	std::vector<float>	verts;
+	std::vector<VRHandMeshPart> parts;
 	unsigned			version = 0;
 };
 extern VRHandMesh g_vrHandMesh;
+
+// Other ROM guns the player may switch to (menu), whose textures are kept from the start: the
+// game's texture RAM changes between stages, so they are copied while they are there.
+extern std::vector<unsigned> g_vrHandPrefetch;
+
+// File where the hand guns' textures are kept once the game has shown them (the player's own
+// Saves folder; made from their ROM on their machine). Empty: not kept. Set by the platform layer.
+extern std::string g_vrHandTexCachePath;
 
 class IVRFrameTarget
 {

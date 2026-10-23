@@ -310,18 +310,39 @@ float SqrLength(vec2 a)
 // Inputs:
 //   spotEllipse   - vec4(center.xy, radius.xy)
 //   spotRange     - vec2(startZ, extent)
-//   viewZ         - fsViewVertex.z
+//   viewPos       - fsViewVertex
+//
+// PC VR: the ellipse is a place on the game's screen. In a headset eye the fragment is first
+// taken back to the game camera (vrSpotGameFromEye) and projected onto the game's screen
+// (vrSpotTan: left, right, top, bottom tangents of its 496x384 frame, vrSpotScale: pixels
+// per screen pixel), so the light lies on the same part of the world in both eyes.
 //
 // Outputs:
 //   lobeEffect    - spotlight intensity
 //   lobeFogEffect - spotlight on fog intensity
 // ------------------------------------------------------------
-void ComputeSpotlight(vec4 spotEllipse, vec2 spotRange, float viewZ,
+uniform bool	vrSpot;
+uniform mat4	vrSpotGameFromEye;
+uniform vec4	vrSpotTan;
+uniform vec2	vrSpotScale;
+
+void ComputeSpotlight(vec4 spotEllipse, vec2 spotRange, vec3 viewPos,
     out float lobeEffect, 
 	out float lobeFogEffect)
 {
+    vec2 fragPos = gl_FragCoord.xy;
+    float viewZ = viewPos.z;
+    if (vrSpot) {
+        vec3 g = (vrSpotGameFromEye * vec4(viewPos, 1.0)).xyz;
+        float z = min(g.z, -1e-4);
+        vec2 t = g.xy / -z;
+        fragPos = vec2((t.x - vrSpotTan.x) / (vrSpotTan.y - vrSpotTan.x) * 496.0,
+                       (t.y - vrSpotTan.w) / (vrSpotTan.z - vrSpotTan.w) * 384.0) * vrSpotScale;
+        viewZ = g.z;
+    }
+
     // Ellipse falloff
-    float ellipse = SqrLength((gl_FragCoord.xy - spotEllipse.xy) / spotEllipse.zw);
+    float ellipse = SqrLength((fragPos - spotEllipse.xy) / spotEllipse.zw);
     ellipse = 1.0 - ellipse;
     ellipse = max(0.0, ellipse);
 

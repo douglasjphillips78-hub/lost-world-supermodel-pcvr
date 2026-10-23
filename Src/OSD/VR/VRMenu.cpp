@@ -369,12 +369,42 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
         s.gunHand = handIdx == 1 ? 2 : 1;
         r.changed = true;
       }
-      static const char *const kGunModel[] = { "Off", "Game", "Custom" };
-      r.changed |= Choice("Gun model in your hand", &s.gunModel, kGunModel, 3);
+      {
+        // Buttons in menu order: Off, Game (or Rifle + Pistol), Arcade (when its file is
+        // there), Custom. Saved values: 0 off, 1 game / rifle, 4 pistol, 3 arcade, 2 custom.
+        const char *names[5];
+        int values[5];
+        int n = 0;
+        names[n] = "Off"; values[n++] = 0;
+        if (s.gunPistol)
+        {
+          names[n] = "Rifle";  values[n++] = 1;
+          names[n] = "Pistol"; values[n++] = 4;
+        }
+        else
+        {
+          names[n] = "Game"; values[n++] = 1;
+        }
+        if (s.gunColours)
+        {
+          names[n] = "Arcade"; values[n++] = 3;
+        }
+        names[n] = "Custom"; values[n++] = 2;
+        int idx = -1;
+        for (int i = 0; i < n; i++)
+          if (values[i] == s.gunModel) idx = i;
+        if (idx < 0)
+          idx = 1;   // a choice this game doesn't have: shown as its own gun
+        if (Choice("Gun model in your hand", &idx, names, n))
+        {
+          s.gunModel = values[idx];
+          r.changed = true;
+        }
+      }
       if (s.gunColours)
       {
         static const char *const kColour[] = { "Blue", "Red" };
-        ImGui::BeginDisabled(s.gunModel != 1);
+        ImGui::BeginDisabled(s.gunModel != 3);
         r.changed |= Choice("Gun colour", &s.gunColour, kColour, 2);
         ImGui::EndDisabled();
       }
