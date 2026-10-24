@@ -11,15 +11,41 @@
 
 #include "DesktopXR.h"
 
-#ifdef _WIN32
+#if defined(_WIN32)
   #define XR_USE_PLATFORM_WIN32
+  #define XR_USE_GRAPHICS_API_OPENGL
+#elif defined(__ANDROID__)
+  // Meta Quest: OpenGL ES 3.2 over EGL, OpenXR loaded from the APK (libopenxr_loader.so).
+  #include <dlfcn.h>
+  #include <jni.h>
+  #include <EGL/egl.h>
+  #include <SDL.h>
+  #define XR_USE_PLATFORM_ANDROID
+  #define XR_USE_GRAPHICS_API_OPENGL_ES
 #else
   #include <dlfcn.h>
   #include <GL/glxew.h>
   #define XR_USE_PLATFORM_XLIB
+  #define XR_USE_GRAPHICS_API_OPENGL
 #endif
-#define XR_USE_GRAPHICS_API_OPENGL
 #include <openxr/openxr_platform.h>
+
+// One name for the "give me the GL requirements" call and the swapchain image type on both APIs.
+#ifdef __ANDROID__
+  #define XR_GL_ENABLE_EXTENSION_NAME   XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME
+  #define XR_GL_REQUIREMENTS_FUNC       xrGetOpenGLESGraphicsRequirementsKHR
+  using XrGLRequirements = XrGraphicsRequirementsOpenGLESKHR;
+  using XrGLSwapchainImage = XrSwapchainImageOpenGLESKHR;
+  constexpr XrStructureType kXrGLRequirementsType = XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR;
+  constexpr XrStructureType kXrGLSwapchainImageType = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
+#else
+  #define XR_GL_ENABLE_EXTENSION_NAME   XR_KHR_OPENGL_ENABLE_EXTENSION_NAME
+  #define XR_GL_REQUIREMENTS_FUNC       xrGetOpenGLGraphicsRequirementsKHR
+  using XrGLRequirements = XrGraphicsRequirementsOpenGLKHR;
+  using XrGLSwapchainImage = XrSwapchainImageOpenGLKHR;
+  constexpr XrStructureType kXrGLRequirementsType = XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR;
+  constexpr XrStructureType kXrGLSwapchainImageType = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR;
+#endif
 
 #include <algorithm>
 #include <array>
@@ -50,13 +76,14 @@ extern void InfoLog(const char *fmt, ...);
   X(xrBeginFrame) X(xrEndFrame) X(xrLocateViews) X(xrStringToPath) X(xrCreateActionSet) \
   X(xrDestroyActionSet) X(xrCreateAction) X(xrSuggestInteractionProfileBindings) \
   X(xrCreateActionSpace) X(xrAttachSessionActionSets) X(xrSyncActions) \
-  X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(xrGetOpenGLGraphicsRequirementsKHR) \
+  X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(XR_GL_REQUIREMENTS_FUNC) \
   X(xrApplyHapticFeedback)
 
 namespace {
 
 PFN_xrGetInstanceProcAddr xrGetInstanceProcAddr = nullptr;
-#define XR_DECLARE(name) PFN_##name name = nullptr;
+#define XR_DECLARE_(name) PFN_##name name = nullptr;
+#define XR_DECLARE(name) XR_DECLARE_(name)
 XR_GLOBAL_FUNCS(XR_DECLARE)
 XR_INSTANCE_FUNCS(XR_DECLARE)
 #undef XR_DECLARE
@@ -290,9 +317,9 @@ bool DesktopXR::LoadLoader()
 #else
   void* lib = dlopen("libopenxr_loader.so.1", RTLD_NOW | RTLD_LOCAL);
   if (!lib)
-    lib = dlopen("libopenxr_loader.so", RTLD_NOW | RTLD_LOCAL);
+    lib = dlopen("libopenxr_loader.so", RTLD_NOW | RTLD_LOCAL);   // the name inside the APK
   if (!lib)
-    return Fail("libopenxr_loader.so.1 not found");
+    return Fail("libopenxr_loader.so not found");
   m_loaderLib = lib;
   xrGetInstanceProcAddr = reinterpret_cast<PFN_xrGetInstanceProcAddr>(dlsym(lib, "xrGetInstanceProcAddr"));
 #endif
@@ -303,6 +330,22 @@ bool DesktopXR::LoadLoader()
 #undef XR_LOAD_GLOBAL
   if (!xrEnumerateInstanceExtensionProperties || !xrCreateInstance)
     return Fail("OpenXR loader is missing core functions");
+#ifdef __ANDROID__
+  // The Android loader must be told which JVM and activity it lives in before anything else.
+  PFN_xrInitializeLoaderKHR initLoader = nullptr;
+  xrGetInstanceProcAddr(XR_NULL_HANDLE, "xrInitializeLoaderKHR", reinterpret_cast<PFN_xrVoidFunction*>(&initLoader));
+  if (!initLoader)
+    return Fail("OpenXR loader has no xrInitializeLoaderKHR");
+  JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+  JavaVM* vm = nullptr;
+  if (!env || env->GetJavaVM(&vm) != JNI_OK || !vm)
+    return Fail("no JavaVM for the OpenXR loader");
+  XrLoaderInitInfoAndroidKHR li{XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR};
+  li.applicationVM = vm;
+  li.applicationContext = static_cast<jobject>(SDL_AndroidGetActivity());
+  if (XR_FAILED(initLoader(reinterpret_cast<const XrLoaderInitInfoBaseHeaderKHR*>(&li))))
+    return Fail("xrInitializeLoaderKHR failed");
+#endif
   return true;
 }
 
@@ -353,10 +396,15 @@ bool DesktopXR::CreateInstance()
     return std::any_of(exts.begin(), exts.end(), [&](const XrExtensionProperties& e) { return std::strcmp(e.extensionName, name) == 0; });
   };
 
-  if (!has(XR_KHR_OPENGL_ENABLE_EXTENSION_NAME))
-    return Fail("the active OpenXR runtime does not support OpenGL (XR_KHR_opengl_enable). "
+  if (!has(XR_GL_ENABLE_EXTENSION_NAME))
+    return Fail("the active OpenXR runtime does not support OpenGL (" XR_GL_ENABLE_EXTENSION_NAME "). "
                 "Use Virtual Desktop (VDXR), Meta Quest Link or SteamVR as the OpenXR runtime.");
-  std::vector<const char*> enabled = {XR_KHR_OPENGL_ENABLE_EXTENSION_NAME};
+  std::vector<const char*> enabled = {XR_GL_ENABLE_EXTENSION_NAME};
+#ifdef __ANDROID__
+  if (!has(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME))
+    return Fail("the OpenXR runtime lacks XR_KHR_android_create_instance");
+  enabled.push_back(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME);
+#endif
   m_hasRefreshRate = has(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
   if (m_hasRefreshRate)
     enabled.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
@@ -368,6 +416,18 @@ bool DesktopXR::CreateInstance()
   ci.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
   ci.enabledExtensionCount = (uint32_t)enabled.size();
   ci.enabledExtensionNames = enabled.data();
+#ifdef __ANDROID__
+  XrInstanceCreateInfoAndroidKHR androidCi{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
+  {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    JavaVM* vm = nullptr;
+    if (!env || env->GetJavaVM(&vm) != JNI_OK || !vm)
+      return Fail("no JavaVM for xrCreateInstance");
+    androidCi.applicationVM = vm;
+    androidCi.applicationActivity = static_cast<jobject>(SDL_AndroidGetActivity());
+    ci.next = &androidCi;
+  }
+#endif
   XrResult r = xrCreateInstance(&ci, &m_instance);
   if (XR_FAILED(r)) {
     char msg[128];
@@ -376,7 +436,8 @@ bool DesktopXR::CreateInstance()
     return Fail(msg);
   }
 
-#define XR_LOAD_INSTANCE(name) xrGetInstanceProcAddr(m_instance, #name, reinterpret_cast<PFN_xrVoidFunction*>(&name));
+#define XR_LOAD_INSTANCE_(name) xrGetInstanceProcAddr(m_instance, #name, reinterpret_cast<PFN_xrVoidFunction*>(&name));
+#define XR_LOAD_INSTANCE(name) XR_LOAD_INSTANCE_(name)
   XR_INSTANCE_FUNCS(XR_LOAD_INSTANCE)
 #undef XR_LOAD_INSTANCE
   if (m_hasRefreshRate) {
@@ -384,7 +445,8 @@ bool DesktopXR::CreateInstance()
     xrGetInstanceProcAddr(m_instance, "xrEnumerateDisplayRefreshRatesFB", reinterpret_cast<PFN_xrVoidFunction*>(&pfnEnumerateDisplayRefreshRatesFB));
     xrGetInstanceProcAddr(m_instance, "xrGetDisplayRefreshRateFB", reinterpret_cast<PFN_xrVoidFunction*>(&pfnGetDisplayRefreshRateFB));
   }
-#define XR_CHECK_LOADED(name) if (!name) return Fail("OpenXR runtime is missing " #name);
+#define XR_CHECK_LOADED_(name) if (!name) return Fail("OpenXR runtime is missing " #name);
+#define XR_CHECK_LOADED(name) XR_CHECK_LOADED_(name)
   XR_INSTANCE_FUNCS(XR_CHECK_LOADED)
 #undef XR_CHECK_LOADED
 
@@ -402,12 +464,28 @@ bool DesktopXR::CreateInstance()
 
 bool DesktopXR::CreateSession()
 {
-  XrGraphicsRequirementsOpenGLKHR reqs{XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR};
-  if (!Check(xrGetOpenGLGraphicsRequirementsKHR(m_instance, m_systemId, &reqs), "xrGetOpenGLGraphicsRequirementsKHR"))
+  XrGLRequirements reqs{kXrGLRequirementsType};
+  if (!Check(XR_GL_REQUIREMENTS_FUNC(m_instance, m_systemId, &reqs), "xrGet...GraphicsRequirementsKHR"))
     return false;
 
   XrSessionCreateInfo si{XR_TYPE_SESSION_CREATE_INFO};
-#ifdef _WIN32
+#if defined(__ANDROID__)
+  // SDL created the EGL context on this thread; OpenXR shares it.
+  XrGraphicsBindingOpenGLESAndroidKHR binding{XR_TYPE_GRAPHICS_BINDING_OPENGL_ES_ANDROID_KHR};
+  binding.display = eglGetCurrentDisplay();
+  binding.context = eglGetCurrentContext();
+  if (binding.display == EGL_NO_DISPLAY || binding.context == EGL_NO_CONTEXT)
+    return Fail("no current EGL context");
+  {
+    EGLint configId = 0;
+    eglQueryContext(binding.display, binding.context, EGL_CONFIG_ID, &configId);
+    const EGLint attribs[] = {EGL_CONFIG_ID, configId, EGL_NONE};
+    EGLConfig cfg = nullptr;
+    EGLint n = 0;
+    if (eglChooseConfig(binding.display, attribs, &cfg, 1, &n) && n > 0)
+      binding.config = cfg;
+  }
+#elif defined(_WIN32)
   XrGraphicsBindingOpenGLWin32KHR binding{XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR};
   binding.hDC = wglGetCurrentDC();
   binding.hGLRC = wglGetCurrentContext();
@@ -457,7 +535,13 @@ bool DesktopXR::CreateSession()
   xrEnumerateSwapchainFormats(m_session, 0, &fmtCount, nullptr);
   std::vector<int64_t> formats(fmtCount);
   xrEnumerateSwapchainFormats(m_session, fmtCount, &fmtCount, formats.data());
-  for (int64_t f : {(int64_t)GL_SRGB8_ALPHA8, (int64_t)GL_RGBA8}) {
+  std::array<int64_t, 2> preferred = {(int64_t)GL_SRGB8_ALPHA8, (int64_t)GL_RGBA8};
+#ifdef __ANDROID__
+  // Without GL_EXT_sRGB_write_control an sRGB target would encode the already-encoded colours twice.
+  if (!GLESCompat::HasExtension("GL_EXT_sRGB_write_control"))
+    std::swap(preferred[0], preferred[1]);
+#endif
+  for (int64_t f : preferred) {
     if (std::find(formats.begin(), formats.end(), f) != formats.end()) {
       m_colorFormat = f;
       break;
@@ -486,7 +570,7 @@ bool DesktopXR::CreateSwapchain(Swapchain& sc, int w, int h)
 
   uint32_t count = 0;
   xrEnumerateSwapchainImages(sc.handle, 0, &count, nullptr);
-  std::vector<XrSwapchainImageOpenGLKHR> images(count, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR});
+  std::vector<XrGLSwapchainImage> images(count, {kXrGLSwapchainImageType});
   if (!Check(xrEnumerateSwapchainImages(sc.handle, count, &count,
                                         reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data())), "xrEnumerateSwapchainImages"))
     return false;

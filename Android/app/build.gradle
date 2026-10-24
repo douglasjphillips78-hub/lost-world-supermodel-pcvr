@@ -1,0 +1,80 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.headsplosion.lostworldvr'
+    compileSdk 34
+    ndkVersion '26.3.11579264'
+
+    defaultConfig {
+        applicationId 'com.headsplosion.lostworldvr'
+        minSdk 29          // Quest 2 / Pro / 3 / 3S all run Android 10 or newer
+        targetSdk 32
+        versionCode 1
+        versionName file('../../VERSION').text.trim()
+
+        ndk { abiFilters 'arm64-v8a' }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_static', '-DCMAKE_BUILD_TYPE=Release'
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path '../CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+
+    sourceSets.main {
+        // SDL's Java side (SDLActivity and friends) is compiled straight from the SDL2 sources.
+        java.srcDirs += ['../third_party/SDL2/android-project/app/src/main/java']
+        assets.srcDir(layout.buildDirectory.dir('generated/bundledAssets'))
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // A sideloaded APK only has to be signed; the auto-generated debug key is fine for that.
+            signingConfig signingConfigs.debug
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // The Khronos OpenXR loader for Android: ships libopenxr_loader.so, which DesktopXR.cpp dlopens.
+    implementation 'org.khronos.openxr:openxr_loader_for_android:1.1.49'
+}
+
+// Bundle the emulator's Config/ and Assets/ into the APK. AndroidBoot.cpp unpacks them on first run
+// using manifest.txt, which lists every bundled file.
+tasks.register('bundleAssets') {
+    def repo = file('../..')
+    def out = layout.buildDirectory.dir('generated/bundledAssets')
+    inputs.dir(new File(repo, 'Config'))
+    inputs.dir(new File(repo, 'Assets'))
+    outputs.dir(out)
+    doLast {
+        def dest = out.get().asFile
+        delete(dest)
+        copy {
+            from(new File(repo, 'Config')) { include 'Games.xml', 'Music.xml', 'Supermodel.ini'; into 'Config' }
+            from(new File(repo, 'Assets')) { exclude 'DIR.txt'; into 'Assets' }
+            into dest
+        }
+        def lines = []
+        dest.eachFileRecurse { f ->
+            if (f.isFile()) lines << dest.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+        }
+        new File(dest, 'manifest.txt').text = lines.sort().join('\n') + '\n'
+    }
+}
+// Whatever the variant is called, generate the assets before they are merged into the APK.
+tasks.matching { it.name ==~ /merge.*Assets/ }.configureEach { dependsOn 'bundleAssets' }

@@ -241,7 +241,13 @@ bool VRMenu::Init(const std::string &assetDir)
   style.Colors[ImGuiCol_TabSelectedOverline] = selHi;
   style.Colors[ImGuiCol_Separator] = teal;
 
-  const bool ok = ImGui_ImplOpenGL3_Init("#version 330");
+  const bool ok = ImGui_ImplOpenGL3_Init(
+#ifdef __ANDROID__
+    "#version 300 es"
+#else
+    "#version 330"
+#endif
+  );
 
   glGenTextures(1, &m_tex);
   glBindTexture(GL_TEXTURE_2D, m_tex);

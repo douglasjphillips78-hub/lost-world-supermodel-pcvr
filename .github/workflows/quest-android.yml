@@ -1,0 +1,75 @@
+name: Quest APK (Android)
+
+# Builds the standalone Meta Quest app (arm64-v8a) and attaches the APK to the run. Pushing a tag
+# like v0.2.0 also publishes it on the release. No game files are included: the person installing
+# the APK copies their own lostwsga.zip onto the headset (see Docs/QUEST.md).
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SDL2_VERSION: 2.30.9
+  SDL2_NET_VERSION: 2.2.0
+
+jobs:
+  apk:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install NDK and CMake
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264" "cmake;3.22.1"
+
+      - name: Fetch SDL2 and SDL2_net
+        run: |
+          set -e
+          mkdir -p Android/third_party && cd Android/third_party
+          curl -sSL "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-${SDL2_VERSION}.tar.gz" | tar xz
+          mv "SDL2-${SDL2_VERSION}" SDL2
+          curl -sSL "https://github.com/libsdl-org/SDL_net/releases/download/release-${SDL2_NET_VERSION}/SDL2_net-${SDL2_NET_VERSION}.tar.gz" | tar xz
+          mv "SDL2_net-${SDL2_NET_VERSION}" SDL2_net
+          ls SDL2/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java SDL2_net/SDLnet.c
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build APK
+        run: gradle -p Android :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Check the APK contents
+        run: |
+          apk=$(ls Android/app/build/outputs/apk/release/*.apk | head -n1)
+          echo "$apk"
+          unzip -l "$apk" | tee apk-contents.txt
+          for need in lib/arm64-v8a/libmain.so lib/arm64-v8a/libSDL2.so lib/arm64-v8a/libopenxr_loader.so assets/manifest.txt assets/Config/Games.xml; do
+            grep -q "$need" apk-contents.txt || { echo "MISSING in APK: $need"; exit 1; }
+          done
+          mkdir -p dist && cp "$apk" dist/LostWorldVR-quest.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LostWorldVR-quest
+          path: dist/LostWorldVR-quest.apk
+
+      - name: Publish release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/LostWorldVR-quest.apk

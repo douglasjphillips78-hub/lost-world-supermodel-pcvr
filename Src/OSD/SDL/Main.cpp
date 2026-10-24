@@ -94,7 +94,11 @@
 #include "SDLIncludes.h"
 #include "Debugger/SupermodelDebugger.h"
 #ifndef SUPERMODEL_OSX
+#ifdef __ANDROID__
+#include "AndroidBoot.h"   // the Legacy3D renderer is desktop-GL only and is not built for Quest
+#else
 #include "Graphics/Legacy3D/Legacy3D.h"
+#endif
 #endif
 #include "Graphics/New3D/New3D.h"
 #include "Model3/IEmulator.h"
@@ -304,8 +308,18 @@ static Result CreateGLScreen(bool coreContext, bool quadRendering, const std::st
   }
   SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER,1);
 
+#ifdef __ANDROID__
+  // Quest: OpenGL ES 3.2 (geometry shaders, texture buffers, usampler2D). The triangle path of the
+  // New3D renderer is all that is used; quad rendering needs `noperspective`, which ES lacks.
+  (void)coreContext; (void)quadRendering;
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+  if (false) {
+#else
   if (coreContext) {
       SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#endif
 
       if (quadRendering) {
           SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
@@ -354,7 +368,9 @@ static Result CreateGLScreen(bool coreContext, bool quadRendering, const std::st
 
   // print some basic GPU info
   GLint profile = 0;
+#ifndef __ANDROID__
   glGetIntegerv(GL_CONTEXT_PROFILE_MASK, &profile);
+#endif
 
   printf("GPU info: %s ", glGetString(GL_VERSION));
 
@@ -1005,6 +1021,11 @@ double g_vrGpuMsSum = 0.0;
 int    g_vrGpuMsCount = 0;
 double g_vrGpuMsWorst = 0.0;
 
+#ifdef __ANDROID__
+// ES 3.2 has no GL_TIME_ELAPSED; the GPU-time statistic simply stays at zero on Quest.
+static void VRGpuTimerBegin() {}
+static void VRGpuTimerEnd() {}
+#else
 static void VRGpuTimerBegin()
 {
   if (!s_vrGpuQueries[0])
@@ -1037,6 +1058,7 @@ static void VRGpuTimerEnd()
   s_vrGpuQueryActive = false;
   s_vrGpuQueryIdx = (s_vrGpuQueryIdx + 1) & 3;
 }
+#endif  // __ANDROID__
 
 // True when a 496x384 2D layer is (almost) entirely bright, e.g. the white SEGA logo screen.
 static bool VRLayerIsWhite(GLuint tex)
@@ -1372,7 +1394,11 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
   superAA->Init(totalXRes, totalYRes);  // pass actual frame sizes here
   CRender2D *Render2D = new CRender2D(s_runtime_config);
 #ifndef SUPERMODEL_OSX
+#ifdef __ANDROID__
+  IRender3D *Render3D = (IRender3D *) new New3D::CNew3D(s_runtime_config, Model3->GetGame().name);
+#else
   IRender3D *Render3D = s_runtime_config["New3DEngine"].ValueAs<bool>() ? ((IRender3D *) new New3D::CNew3D(s_runtime_config, Model3->GetGame().name)) : ((IRender3D *) new Legacy3D::CLegacy3D(s_runtime_config));
+#endif
 #else
   // Legacy renderer is not supported on Mac, always use new engine
   IRender3D *Render3D = (IRender3D *) new New3D::CNew3D(s_runtime_config, Model3->GetGame().name);
@@ -3208,6 +3234,18 @@ static ParsedCommandLine ParseCommandLine(int argc, char **argv)
  */
 int main(int argc, char **argv)
 {
+#ifdef __ANDROID__
+  // No command line on a headset: set up the working folder and run with the VR arguments.
+  std::vector<std::string> androidArgs;
+  if (!AndroidBoot::Prepare(androidArgs))
+    return 1;
+  std::vector<char*> androidArgv;
+  for (auto& a : androidArgs)
+    androidArgv.push_back(&a[0]);
+  androidArgv.push_back(nullptr);
+  argc = (int)androidArgs.size();
+  argv = androidArgv.data();
+#endif
   Title();
   WriteDefaultConfigurationFileIfNotPresent();
 

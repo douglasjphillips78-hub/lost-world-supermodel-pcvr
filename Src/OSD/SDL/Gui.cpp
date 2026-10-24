@@ -878,7 +878,13 @@ std::vector<std::string> RunGUI(const std::string& configPath, const Util::Confi
 
     // Setup Platform/Renderer backends
     ImGui_ImplSDL2_InitForOpenGL(window, glContext);
-    ImGui_ImplOpenGL3_Init("#version 410");
+    ImGui_ImplOpenGL3_Init(
+#ifdef __ANDROID__
+    "#version 300 es"
+#else
+    "#version 410"
+#endif
+    );
 
     std::string xmlFile = config["GameXMLFile"].ValueAs<std::string>();
     GameLoader loader(xmlFile);

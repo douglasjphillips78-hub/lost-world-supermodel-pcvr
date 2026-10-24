@@ -1,0 +1,46 @@
+# The Lost World VR on Meta Quest (standalone APK)
+
+This is a port of the PC VR build to run **on the headset itself**, with no PC or streaming. It is
+experimental: nobody has measured whether a Quest can emulate a Sega Model 3 at a steady 60 fps while
+drawing two eyes, so treat the first builds as a performance test.
+
+## Install
+
+1. Get `LostWorldVR-quest.apk` from the Releases page, or from the artifacts of the latest successful
+   **Quest APK (Android)** run under Actions.
+2. Sideload it: enable developer mode on the headset, connect over USB, then
+   `adb install -r LostWorldVR-quest.apk` (or use Meta Quest Developer Hub / SideQuest).
+3. Copy your own `lostwsga.zip` (The Lost World, Japan, Revision A) to the headset:
+   `adb push lostwsga.zip /sdcard/Android/data/com.headsplosion.lostworldvr/files/ROMs/`
+   (start the app once first, so the folder exists; it also shows you the path if the ROM is missing).
+4. Launch **The Lost World VR** from *Unknown Sources* in the headset library.
+
+Settings, NVRAM and saves live next to the ROM in `.../files/Config`, `NVRAM` and `Saves`. Optional gun
+models go in `.../files/Assets/` (see `Assets/VR-MENU.txt`). The controls and options menu are the same
+as the PC version (see the README).
+
+## Debugging
+
+The emulator's console output is forwarded to logcat: `adb logcat -s SupermodelVR`. The VR statistics
+line is printed there too (GPU time is not available on Quest and shows 0).
+
+## What differs from the PC build
+
+| Area | PC | Quest |
+|---|---|---|
+| Graphics API | OpenGL 4.1 core (GLEW) | OpenGL ES 3.2 through `Android/glcompat/GL/glew.h` |
+| Shaders | `#version 410 core` | rewritten at load to `#version 320 es` (`GLESCompat::ConvertShader`) |
+| 3D renderer | New3D or Legacy3D | New3D, triangle path only (quad rendering needs `noperspective`, which ES lacks) |
+| OpenXR | `XR_KHR_opengl_enable`, runtime from the PC | `XR_KHR_opengl_es_enable` + `XR_KHR_android_create_instance`, loader from the APK |
+| Start-up | command line | `AndroidBoot`: working folder, bundled config, fixed VR arguments |
+
+## Building
+
+CI does everything (`.github/workflows/quest-android.yml`). Locally you need JDK 17, the Android SDK with
+NDK 26.3.11579264 and CMake 3.22.1, Gradle 8.7, and SDL2 2.30.9 / SDL2_net 2.2.0 unpacked into
+`Android/third_party/SDL2` and `Android/third_party/SDL2_net`. Then:
+
+    gradle -p Android :app:assembleRelease
+
+The APK is `Android/app/build/outputs/apk/release/app-release.apk` (signed with the debug key, which is
+all sideloading needs).
