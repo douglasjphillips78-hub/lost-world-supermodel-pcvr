@@ -1118,6 +1118,14 @@ static void VRFinishFrame(CModel3 *model3, bool &inFlight)
 
 static int s_vrDbgButtons = 0;   // debug: coin/start/trigger from SM_DBG_AIM
 
+// Flight-stick games (Star Wars Trilogy): no light gun, an analog joystick instead. The controllers'
+// thumbsticks deflect a virtual stick, which is fed through the same virtual mouse the light-gun games
+// use: Supermodel binds the analog joystick axes to the mouse axes by default (InputAnalogJoyX =
+// JOY_XAXIS,MOUSE_XAXIS), and with the mouse in the middle of the game area the stick is centred.
+static bool  s_vrFlightStick = false;
+static bool  s_vrStickInvertY = false;   // VRStickInvertY = 1 if pushing forward climbs instead of dives
+static float s_vrStickDeadZone = 0.12f;  // VRStickDeadZone: ignore drift near the centre
+
 static void ApplyVRInput(DesktopXR &xr)
 {
   const DesktopXRInput &in = xr.Input();
@@ -1161,6 +1169,19 @@ static void ApplyVRInput(DesktopXR &xr)
   g_vrInput.coin1   = (in.buttonB || in.buttonX || (s_vrDbgButtons & 1)) && !s_vrMenuOpen;
   g_vrInput.test    = in.grip[1] && in.thumbClick[1] && !s_vrMenuOpen;   // left grip + left stick click
   g_vrInput.service = false;
+
+  if (s_vrFlightStick)
+  {
+    // Both thumbsticks work (add them, so either hand can fly). Triggers fire (the stick's trigger
+    // button), grips are the stick's thumb button. Nothing moves while the options menu is open.
+    auto dead = [](float v, float d) { const float a = std::fabs(v); return a <= d ? 0.0f : std::copysign((a - d) / (1.0f - d), v); };
+    float sx = s_vrMenuOpen ? 0.0f : dead(std::clamp(in.stick[0][0] + in.stick[1][0], -1.0f, 1.0f), s_vrStickDeadZone);
+    float sy = s_vrMenuOpen ? 0.0f : dead(std::clamp(in.stick[0][1] + in.stick[1][1], -1.0f, 1.0f), s_vrStickDeadZone);
+    g_vrInput.x = 0.5f + 0.5f * sx;
+    g_vrInput.y = 0.5f + (s_vrStickInvertY ? 0.5f : -0.5f) * sy;   // thumbstick up = forward = mouse up
+    g_vrInput.mouseLeft  = (in.trigger[0] || in.trigger[1]) && !s_vrMenuOpen;
+    g_vrInput.mouseRight = (in.grip[0] || in.grip[1]) && !s_vrMenuOpen;
+  }
 
   // Either stick click: re-centre the view (game screen straight ahead). Not with the left
   // grip held - that is the operator menu.
@@ -1467,6 +1488,11 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       s_vrAimScaleY  = s_runtime_config["VRAimScaleY"].ValueAsDefault<float>(1.0f);
       s_vrAimOffsetY = s_runtime_config["VRAimOffsetY"].ValueAsDefault<float>(0.0f);
       g_vrInput.active = true;
+      s_vrFlightStick = (game.inputs & Game::INPUT_ANALOG_JOYSTICK) && !gameHasLightguns;
+      s_vrStickInvertY = s_runtime_config["VRStickInvertY"].ValueAsDefault<bool>(false);
+      s_vrStickDeadZone = std::clamp(s_runtime_config["VRStickDeadZone"].ValueAsDefault<float>(0.12f), 0.0f, 0.6f);
+      if (s_vrFlightStick)
+        InfoLog("VR: flight stick mode for '%s' (thumbsticks, dead zone %.2f%s)", game.name.c_str(), s_vrStickDeadZone, s_vrStickInvertY ? ", Y inverted" : "");
       vrNew3D = dynamic_cast<New3D::CNew3D *>(Render3D);
       vrModel3 = dynamic_cast<CModel3 *>(Model3);
       vrAsync = vrModel3 && vrModel3->CanRunAsync() && s_runtime_config["VRAsyncFrames"].ValueAsDefault<bool>(true);

@@ -13,7 +13,17 @@
 
 namespace
 {
-const char* kRomName = "lostwsga.zip";
+// ROM sets the app knows, in the order it prefers them when several are present. Each is the zip name
+// (without .zip) and the game's name in Config/Games.xml. Clone sets such as swtrilgya also need their
+// parent set (swtrilgy.zip) in the same folder.
+struct KnownGame { const char* zip; const char* title; };
+const KnownGame kGames[] = {
+  {"lostwsga", "The Lost World: Jurassic Park"},
+  {"swtrilgy", "Star Wars Trilogy Arcade"},
+  {"swtrilgya", "Star Wars Trilogy Arcade (Export)"},
+  {"swtrilgyp", "Star Wars Trilogy Arcade (Location Test)"},
+  {"lostwsgp", "The Lost World: Jurassic Park (Location Test)"},
+};
 const char* kTag = "SupermodelVR";
 
 // Supermodel prints to stdout/stderr, which Android discards. Forward both to logcat
@@ -155,17 +165,52 @@ bool Prepare(std::vector<std::string>& args)
 
   CopyBundledFiles();
 
-  const std::string rom = std::string("ROMs/") + kRomName;
-  if (!Exists(rom)) {
-    WriteFile("ROMs/PUT-ROMS-HERE.txt", std::string("Put your own ") + kRomName + " ROM set in this folder, then start the app again.\n");
-    const std::string msg = std::string("ROM not found.\n\nCopy ") + kRomName + " (The Lost World, Japan, Rev A) to:\n" + ext +
-                            "/ROMs/\n\nover USB (Quest Developer Hub / file transfer) or adb push, then start the app again.";
+  // Which game to start: the one named in Config/StartGame.txt (a ROM name such as swtrilgy) if that
+  // ROM is there; otherwise the first known ROM set found in ROMs/. With one game installed there
+  // is nothing to choose.
+  std::string wanted;
+  {
+    std::ifstream f("Config/StartGame.txt");
+    if (f >> wanted) {
+      while (!wanted.empty() && (wanted.back() == '\r' || wanted.back() == '\n'))
+        wanted.pop_back();
+      if (wanted.size() > 4 && wanted.compare(wanted.size() - 4, 4, ".zip") == 0)
+        wanted.resize(wanted.size() - 4);
+    }
+  }
+  std::string rom, title;
+  if (!wanted.empty() && Exists("ROMs/" + wanted + ".zip")) {
+    rom = "ROMs/" + wanted + ".zip";
+    title = wanted;
+    for (const auto& g : kGames)
+      if (wanted == g.zip)
+        title = g.title;
+  } else {
+    for (const auto& g : kGames) {
+      if (Exists(std::string("ROMs/") + g.zip + ".zip")) {
+        rom = std::string("ROMs/") + g.zip + ".zip";
+        title = g.title;
+        break;
+      }
+    }
+  }
+  if (rom.empty()) {
+    std::string names;
+    for (const auto& g : kGames)
+      names += std::string("  ") + g.zip + ".zip  (" + g.title + ")\n";
+    WriteFile("ROMs/PUT-ROMS-HERE.txt", "Put your own ROM sets in this folder, then start the app again.\nSupported:\n" + names +
+              "\nWith several installed, the first is started. To pick another, put its name (for example swtrilgy)\nin Config/StartGame.txt.\n");
+    const std::string msg = std::string("No ROM found.\n\nCopy your own ROM set to:\n") + ext + "/ROMs/\n\nSupported:\n" + names +
+                            "\nover USB (Quest Developer Hub file manager) or adb push, then start the app again.";
     __android_log_print(ANDROID_LOG_ERROR, kTag, "%s", msg.c_str());
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Supermodel VR", msg.c_str(), nullptr);
     return false;
   }
+  __android_log_print(ANDROID_LOG_INFO, kTag, "Starting %s (%s)", title.c_str(), rom.c_str());
 
-  // The same arguments Scripts/vr/Play The Lost World VR.bat uses on Windows.
+  // The same arguments Scripts/vr/Play The Lost World VR.bat uses on Windows, plus -channels=2: The
+  // Lost World asks for 4 speaker channels, but the headset is stereo, and a 4-channel stream can open
+  // without error and play nothing. The emulator downmixes to 2 itself.
   args = {"supermodel", rom, "-vr", "-window", "-res=992,768", "-no-wide-screen", "-channels=2"};
   return true;
 }

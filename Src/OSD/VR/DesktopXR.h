@@ -42,6 +42,9 @@ struct DesktopXRInput
   bool trigger[2]    = {false, false};
   bool grip[2]       = {false, false};
   bool thumbClick[2] = {false, false};
+  // Thumbstick deflection, -1..1 (x right, y up). Index 0 = right hand. Drives the flight stick of
+  // games such as Star Wars Trilogy.
+  float stick[2][2]  = {{0.f, 0.f}, {0.f, 0.f}};
   bool buttonA = false, buttonB = false, buttonX = false, buttonY = false;
   bool menu = false;
 
@@ -265,6 +268,7 @@ private:
   XrAction m_aimPose = XR_NULL_HANDLE, m_trigger = XR_NULL_HANDLE, m_grip = XR_NULL_HANDLE;
   XrAction m_a = XR_NULL_HANDLE, m_b = XR_NULL_HANDLE, m_x = XR_NULL_HANDLE, m_y = XR_NULL_HANDLE;
   XrAction m_menu = XR_NULL_HANDLE, m_thumbClick = XR_NULL_HANDLE, m_haptic = XR_NULL_HANDLE;
+  XrAction m_thumbstick = XR_NULL_HANDLE;
   XrPath   m_hands[2] = {XR_NULL_PATH, XR_NULL_PATH};  // 0 = right, 1 = left
   XrSpace  m_aimSpaces[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
   DesktopXRInput m_input;

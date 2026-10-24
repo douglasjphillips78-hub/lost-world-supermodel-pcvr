@@ -76,7 +76,7 @@ extern void InfoLog(const char *fmt, ...);
   X(xrBeginFrame) X(xrEndFrame) X(xrLocateViews) X(xrStringToPath) X(xrCreateActionSet) \
   X(xrDestroyActionSet) X(xrCreateAction) X(xrSuggestInteractionProfileBindings) \
   X(xrCreateActionSpace) X(xrAttachSessionActionSets) X(xrSyncActions) \
-  X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(XR_GL_REQUIREMENTS_FUNC) \
+  X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(xrGetActionStateVector2f) X(XR_GL_REQUIREMENTS_FUNC) \
   X(xrApplyHapticFeedback)
 
 namespace {
@@ -635,6 +635,7 @@ bool DesktopXR::CreateActions()
       !make(m_y, XR_ACTION_TYPE_BOOLEAN_INPUT, "button_y", "Start (left)", false) ||
       !make(m_menu, XR_ACTION_TYPE_BOOLEAN_INPUT, "menu", "Menu", false) ||
       !make(m_thumbClick, XR_ACTION_TYPE_BOOLEAN_INPUT, "thumb_click", "Thumbstick click", true) ||
+      !make(m_thumbstick, XR_ACTION_TYPE_VECTOR2F_INPUT, "thumbstick", "Thumbstick", true) ||
       !make(m_haptic, XR_ACTION_TYPE_VIBRATION_OUTPUT, "recoil", "Recoil", true))
     return false;
 
@@ -659,6 +660,8 @@ bool DesktopXR::CreateActions()
     {m_menu,       path("/user/hand/left/input/menu/click")},
     {m_thumbClick, path("/user/hand/right/input/thumbstick/click")},
     {m_thumbClick, path("/user/hand/left/input/thumbstick/click")},
+    {m_thumbstick, path("/user/hand/right/input/thumbstick")},
+    {m_thumbstick, path("/user/hand/left/input/thumbstick")},
     {m_haptic,     path("/user/hand/right/output/haptic")},
     {m_haptic,     path("/user/hand/left/output/haptic")},
   };
@@ -2760,6 +2763,18 @@ void DesktopXR::SyncInput()
     XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
     return XR_SUCCEEDED(xrGetActionStateBoolean(m_session, &gi, &st)) && st.isActive && st.currentState;
   };
+  auto getVec2 = [&](XrAction a, XrPath sub, float out[2]) {
+    XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+    gi.action = a;
+    gi.subactionPath = sub;
+    XrActionStateVector2f st{XR_TYPE_ACTION_STATE_VECTOR2F};
+    if (XR_SUCCEEDED(xrGetActionStateVector2f(m_session, &gi, &st)) && st.isActive) {
+      out[0] = st.currentState.x;
+      out[1] = st.currentState.y;
+    } else {
+      out[0] = out[1] = 0.f;
+    }
+  };
   auto getFloat = [&](XrAction a, XrPath sub) {
     XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
     gi.action = a;
@@ -2781,6 +2796,7 @@ void DesktopXR::SyncInput()
     in.trigger[h]    = getFloat(m_trigger, m_hands[h]) > 0.5f;
     in.grip[h]       = getFloat(m_grip, m_hands[h]) > 0.5f;
     in.thumbClick[h] = getBool(m_thumbClick, m_hands[h]);
+    getVec2(m_thumbstick, m_hands[h], in.stick[h]);
 
     // Aim ray -> game screen: intersect with the HUD plane (z = -d) and normalise against
     // the game's frustum at that distance. Matches where the HUD is drawn.
