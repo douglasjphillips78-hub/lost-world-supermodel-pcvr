@@ -1209,7 +1209,7 @@ void DesktopXR::HandleSessionState(XrSessionState state)
           }
           if (rates.empty())
             best = m_config.refreshHz;   // no list: ask anyway
-          if (best > current + 0.5f) {
+          if (std::fabs(best - current) > 0.5f) {   // up or down: VRRefreshHz = 72 also lowers a headset that defaults to 90/120
             XrResult r = pfnRequestDisplayRefreshRateFB(m_session, best);
             InfoLog("VR: headset refresh rates offered: %s (now %.0f Hz) -> asked for %.0f Hz -> %d",
                     list.empty() ? "?" : list.c_str(), current, best, (int)r);

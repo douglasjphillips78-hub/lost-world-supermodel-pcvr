@@ -1125,6 +1125,8 @@ static int s_vrDbgButtons = 0;   // debug: coin/start/trigger from SM_DBG_AIM
 static bool  s_vrFlightStick = false;
 static bool  s_vrStickInvertY = false;   // VRStickInvertY = 1 if pushing forward climbs instead of dives
 static float s_vrStickDeadZone = 0.12f;  // VRStickDeadZone: ignore drift near the centre
+static bool  s_vrStickAim = true;        // VRStickMode 0 (default): point the controller to steer; 1: thumbsticks
+static float s_vrStickAimRange = 0.5f;   // VRStickAimRange: how far from the screen centre (1 = screen width) is full stick
 
 static void ApplyVRInput(DesktopXR &xr)
 {
@@ -1175,12 +1177,33 @@ static void ApplyVRInput(DesktopXR &xr)
     // Both thumbsticks work (add them, so either hand can fly). Triggers fire (the stick's trigger
     // button), grips are the stick's thumb button. Nothing moves while the options menu is open.
     auto dead = [](float v, float d) { const float a = std::fabs(v); return a <= d ? 0.0f : std::copysign((a - d) / (1.0f - d), v); };
-    float sx = s_vrMenuOpen ? 0.0f : dead(std::clamp(in.stick[0][0] + in.stick[1][0], -1.0f, 1.0f), s_vrStickDeadZone);
-    float sy = s_vrMenuOpen ? 0.0f : dead(std::clamp(in.stick[0][1] + in.stick[1][1], -1.0f, 1.0f), s_vrStickDeadZone);
-    g_vrInput.x = 0.5f + 0.5f * sx;
-    g_vrInput.y = 0.5f + (s_vrStickInvertY ? 0.5f : -0.5f) * sy;   // thumbstick up = forward = mouse up
-    g_vrInput.mouseLeft  = (in.trigger[0] || in.trigger[1]) && !s_vrMenuOpen;
-    g_vrInput.mouseRight = (in.grip[0] || in.grip[1]) && !s_vrMenuOpen;
+    float sx, sy;   // -1..1, +x right, +y up
+    if (s_vrStickAim)
+    {
+      // Light-gun style: where the controller points on the screen is where the stick is pushed
+      // (screen centre = stick centred, screen edge = full deflection). The Lost World's gun
+      // calibration (VRAimScale/Offset) is not used here: it is measured for that game only.
+      sx = sy = 0.0f;
+      if (!s_vrMenuOpen && in.aimValid[h])
+      {
+        const float r = (std::max)(s_vrStickAimRange, 0.1f);
+        sx = dead(std::clamp((in.aimX[h] - 0.5f) / r, -1.0f, 1.0f), s_vrStickDeadZone);
+        sy = dead(std::clamp((0.5f - in.aimY[h]) / r, -1.0f, 1.0f), s_vrStickDeadZone);
+      }
+      g_vrInput.x = 0.5f + 0.5f * sx;
+      g_vrInput.y = 0.5f + (s_vrStickInvertY ? 0.5f : -0.5f) * sy;
+      g_vrInput.mouseLeft  = in.trigger[h] && !s_vrMenuOpen;
+      g_vrInput.mouseRight = in.grip[h] && !s_vrMenuOpen;
+    }
+    else
+    {
+      sx = s_vrMenuOpen ? 0.0f : dead(std::clamp(in.stick[0][0] + in.stick[1][0], -1.0f, 1.0f), s_vrStickDeadZone);
+      sy = s_vrMenuOpen ? 0.0f : dead(std::clamp(in.stick[0][1] + in.stick[1][1], -1.0f, 1.0f), s_vrStickDeadZone);
+      g_vrInput.x = 0.5f + 0.5f * sx;
+      g_vrInput.y = 0.5f + (s_vrStickInvertY ? 0.5f : -0.5f) * sy;   // thumbstick up = forward = mouse up
+      g_vrInput.mouseLeft  = (in.trigger[0] || in.trigger[1]) && !s_vrMenuOpen;
+      g_vrInput.mouseRight = (in.grip[0] || in.grip[1]) && !s_vrMenuOpen;
+    }
   }
 
   // Either stick click: re-centre the view (game screen straight ahead). Not with the left
@@ -1491,8 +1514,10 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       s_vrFlightStick = (game.inputs & Game::INPUT_ANALOG_JOYSTICK) && !gameHasLightguns;
       s_vrStickInvertY = s_runtime_config["VRStickInvertY"].ValueAsDefault<bool>(false);
       s_vrStickDeadZone = std::clamp(s_runtime_config["VRStickDeadZone"].ValueAsDefault<float>(0.12f), 0.0f, 0.6f);
+      s_vrStickAim = s_runtime_config["VRStickMode"].ValueAsDefault<int>(0) == 0;
+      s_vrStickAimRange = std::clamp(s_runtime_config["VRStickAimRange"].ValueAsDefault<float>(0.5f), 0.1f, 2.0f);
       if (s_vrFlightStick)
-        InfoLog("VR: flight stick mode for '%s' (thumbsticks, dead zone %.2f%s)", game.name.c_str(), s_vrStickDeadZone, s_vrStickInvertY ? ", Y inverted" : "");
+        InfoLog("VR: flight stick mode for '%s' (%s, dead zone %.2f%s)", game.name.c_str(), s_vrStickAim ? "point the controller" : "thumbsticks", s_vrStickDeadZone, s_vrStickInvertY ? ", Y inverted" : "");
       vrNew3D = dynamic_cast<New3D::CNew3D *>(Render3D);
       vrModel3 = dynamic_cast<CModel3 *>(Model3);
       vrAsync = vrModel3 && vrModel3->CanRunAsync() && s_runtime_config["VRAsyncFrames"].ValueAsDefault<bool>(true);
