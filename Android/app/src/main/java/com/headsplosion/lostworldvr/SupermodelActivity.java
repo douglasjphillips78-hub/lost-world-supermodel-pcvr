@@ -11,7 +11,7 @@ public class SupermodelActivity extends SDLActivity {
     }
 
     @Override
-    protected void loadLibraries() {
+    public void loadLibraries() {
         // SDL's Java HID code calls into libhidapi.so when SDL was built with HIDAPI. Load it if it
         // exists; a build without it is fine, since the Quest controllers come in through OpenXR.
         try {
