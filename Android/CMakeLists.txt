@@ -146,7 +146,7 @@ set(M68K_SOURCES
   ${GEN}/m68kops.c ${GEN}/m68kopac.c ${GEN}/m68kopdm.c ${GEN}/m68kopnz.c
 )
 set_source_files_properties(${M68K_SOURCES} PROPERTIES
-  COMPILE_FLAGS "-DINLINE=\"static inline\" -Wno-unused-variable")
+  COMPILE_FLAGS "-DINLINE=\"static inline\" -Wno-unused-variable -include sys/types.h -include stdio.h")
 
 # SDL2_net is four small C files; compiling them in avoids a second CMake subproject.
 if(HOST_REHEARSAL)
