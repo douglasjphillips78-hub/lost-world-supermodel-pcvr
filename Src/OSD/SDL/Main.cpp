@@ -123,11 +123,11 @@
  Global Run-time Config
 ******************************************************************************/
 
-static const std::string s_analysisPath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Analysis);
-static const std::string s_configFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Supermodel.ini";
-static const std::string s_gameXMLFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Games.xml";
-static const std::string s_musicXMLFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Music.xml";
-static const std::string s_logFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Log) << "Supermodel.log";
+static std::string s_analysisPath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Analysis);
+static std::string s_configFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Supermodel.ini";
+static std::string s_gameXMLFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Games.xml";
+static std::string s_musicXMLFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Music.xml";
+static std::string s_logFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Log) << "Supermodel.log";
 
 static Util::Config::Node s_runtime_config("Global");
 
@@ -3245,6 +3245,13 @@ int main(int argc, char **argv)
   androidArgv.push_back(nullptr);
   argc = (int)androidArgs.size();
   argv = androidArgv.data();
+  // These paths were computed before main() ran, when the working folder was still wrong (they fell back
+  // to /data/.config/supermodel). Recompute them now that AndroidBoot has moved into the app's folder.
+  s_analysisPath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Analysis);
+  s_configFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Supermodel.ini";
+  s_gameXMLFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Games.xml";
+  s_musicXMLFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Config) << "Music.xml";
+  s_logFilePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Log) << "Supermodel.log";
 #endif
   Title();
   WriteDefaultConfigurationFileIfNotPresent();
