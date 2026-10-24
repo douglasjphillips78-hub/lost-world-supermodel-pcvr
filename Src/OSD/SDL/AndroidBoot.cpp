@@ -166,7 +166,7 @@ bool Prepare(std::vector<std::string>& args)
   }
 
   // The same arguments Scripts/vr/Play The Lost World VR.bat uses on Windows.
-  args = {"supermodel", rom, "-vr", "-window", "-res=992,768", "-no-wide-screen"};
+  args = {"supermodel", rom, "-vr", "-window", "-res=992,768", "-no-wide-screen", "-channels=2"};
   return true;
 }
 }  // namespace AndroidBoot
