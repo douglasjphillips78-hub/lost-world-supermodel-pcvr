@@ -11,11 +11,11 @@ drawing two eyes, so treat the first builds as a performance test.
 2. Sideload it: enable developer mode on the headset, connect over USB, then
    `adb install -r LostWorldVR-quest.apk` (or use Meta Quest Developer Hub / SideQuest).
 3. Copy your own ROM set to the headset, for example
-   `adb push swtrilgy.zip /sdcard/Android/data/com.headsplosion.lostworldvr/files/ROMs/`
+   `adb push swtrilgy.zip /sdcard/Android/data/com.headsplosion.starwarsvr/files/ROMs/`
    (start the app once first, so the folder exists; it also shows you the path if no ROM is found).
    Supported: `lostwsga.zip` (The Lost World), `swtrilgy.zip` (Star Wars Trilogy Arcade), and the clone
    sets `swtrilgya.zip` / `swtrilgyp.zip` (these also need `swtrilgy.zip`), `lostwsgp.zip`.
-4. Launch **Supermodel VR** from *Unknown Sources* in the headset library.
+4. Launch **Star Wars Trilogy VR** from *Unknown Sources* in the headset library.
 
 With several ROMs installed, the first one found is started (Lost World, then Star Wars). To choose, create
 `.../files/Config/StartGame.txt` containing the ROM name, e.g. `swtrilgy`.
