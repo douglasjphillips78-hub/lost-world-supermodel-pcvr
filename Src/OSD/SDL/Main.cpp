@@ -1126,7 +1126,14 @@ static bool  s_vrFlightStick = false;
 static bool  s_vrStickInvertY = false;   // VRStickInvertY = 1 if pushing forward climbs instead of dives
 static float s_vrStickDeadZone = 0.12f;  // VRStickDeadZone: ignore drift near the centre
 static bool  s_vrStickAim = true;        // VRStickMode 0 (default): point the controller to steer; 1: thumbsticks
-static float s_vrStickAimRange = 0.5f;   // VRStickAimRange: how far from the screen centre (1 = screen width) is full stick
+static float s_vrStickAimRange = 0.5f;
+// Swing mode (light-sabre sections): the stick follows how fast the controller moves, not where it points.
+static bool  s_vrSwing = false;           // toggled with the left trigger
+static bool  s_vrPrevLeftTrigger = false;
+static float s_vrSwingPrevX = 0.5f, s_vrSwingPrevY = 0.5f, s_vrSwingX = 0.0f, s_vrSwingY = 0.0f;
+static bool  s_vrSwingHavePrev = false;
+static uint64_t s_vrSwingTicks = 0;
+static float s_vrSwingSpeed = 1.2f;       // VRSwingSpeed: controller speed (screen widths per second) that gives full stick
 
 static void ApplyVRInput(DesktopXR &xr)
 {
@@ -1184,8 +1191,43 @@ static void ApplyVRInput(DesktopXR &xr)
       // (screen centre = stick centred, screen edge = full deflection). The Lost World's gun
       // calibration (VRAimScale/Offset) is not used here: it is measured for that game only.
       sx = sy = 0.0f;
-      if (!s_vrMenuOpen && in.aimValid[h])
+      // Left trigger switches between pointing (flying/shooting) and swinging (light-sabre duels)
+      if (in.trigger[0] && !s_vrPrevLeftTrigger && !s_vrMenuOpen)
       {
+        s_vrSwing = !s_vrSwing;
+        s_vrSwingHavePrev = false;
+        s_vrSwingX = s_vrSwingY = 0.0f;
+        xr.Haptic(0, 0.8f, s_vrSwing ? 0.25f : 0.08f);   // long buzz = swing mode, short = pointing
+        InfoLog("VR: stick mode: %s", s_vrSwing ? "swing (follows controller motion)" : "point (follows where the controller aims)");
+      }
+      s_vrPrevLeftTrigger = in.trigger[0];
+      if (!s_vrMenuOpen && in.aimValid[h] && s_vrSwing)
+      {
+        const uint64_t now = SDL_GetPerformanceCounter();
+        const float dt = s_vrSwingTicks ? (float)((double)(now - s_vrSwingTicks) / (double)SDL_GetPerformanceFrequency()) : 0.0f;
+        s_vrSwingTicks = now;
+        float tx = 0.0f, ty = 0.0f;
+        if (s_vrSwingHavePrev && dt > 0.0005f && dt < 0.25f)
+        {
+          // controller speed over the virtual screen; small movements (hand tremor) are ignored
+          const float vx = (in.aimX[h] - s_vrSwingPrevX) / dt, vy = (s_vrSwingPrevY - in.aimY[h]) / dt;   // +x right, +y up
+          const float spd = (std::max)(s_vrSwingSpeed, 0.2f);
+          tx = dead(std::clamp(vx / spd, -1.0f, 1.0f), 0.1f);
+          ty = dead(std::clamp(vy / spd, -1.0f, 1.0f), 0.1f);
+          // quick to follow a swing, a touch of smoothing so the stick does not flicker
+          const float a = 1.0f - std::exp(-dt / 0.03f);
+          s_vrSwingX += (tx - s_vrSwingX) * a;
+          s_vrSwingY += (ty - s_vrSwingY) * a;
+        }
+        s_vrSwingPrevX = in.aimX[h];
+        s_vrSwingPrevY = in.aimY[h];
+        s_vrSwingHavePrev = true;
+        sx = s_vrSwingX;
+        sy = s_vrSwingY;
+      }
+      else if (!s_vrMenuOpen && in.aimValid[h])
+      {
+        s_vrSwingHavePrev = false;
         const float r = (std::max)(s_vrStickAimRange, 0.1f);
         sx = dead(std::clamp((in.aimX[h] - 0.5f) / r, -1.0f, 1.0f), s_vrStickDeadZone);
         sy = dead(std::clamp((0.5f - in.aimY[h]) / r, -1.0f, 1.0f), s_vrStickDeadZone);
@@ -1516,6 +1558,8 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       s_vrStickDeadZone = std::clamp(s_runtime_config["VRStickDeadZone"].ValueAsDefault<float>(0.12f), 0.0f, 0.6f);
       s_vrStickAim = s_runtime_config["VRStickMode"].ValueAsDefault<int>(0) == 0;
       s_vrStickAimRange = std::clamp(s_runtime_config["VRStickAimRange"].ValueAsDefault<float>(0.5f), 0.1f, 2.0f);
+      s_vrSwingSpeed = std::clamp(s_runtime_config["VRSwingSpeed"].ValueAsDefault<float>(1.2f), 0.2f, 6.0f);
+      s_vrSwing = s_runtime_config["VRSwingStart"].ValueAsDefault<int>(0) != 0;
       if (s_vrFlightStick)
         InfoLog("VR: flight stick mode for '%s' (%s, dead zone %.2f%s)", game.name.c_str(), s_vrStickAim ? "point the controller" : "thumbsticks", s_vrStickDeadZone, s_vrStickInvertY ? ", Y inverted" : "");
       vrNew3D = dynamic_cast<New3D::CNew3D *>(Render3D);
