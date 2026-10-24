@@ -58,6 +58,7 @@ endif()
 set(SM_CXX_SOURCES
   ${REPO}/Src/CPU/PowerPC/PPCDisasm.cpp
   ${REPO}/Src/BlockFile.cpp
+  ${REPO}/Src/Model3/JTAG.cpp
   ${REPO}/Src/Model3/93C46.cpp
   ${REPO}/Src/Graphics/Shader.cpp
   ${REPO}/Src/Model3/Real3D.cpp
