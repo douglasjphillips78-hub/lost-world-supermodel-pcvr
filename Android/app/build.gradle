@@ -14,7 +14,7 @@ android {
        }
 
     defaultConfig {
-        applicationId 'com.headsplosion.lostworldvr'
+        applicationId 'com.headsplosion.starwarsvr'
         minSdk 29          // Quest 2 / Pro / 3 / 3S all run Android 10 or newer
         targetSdk 32
         versionCode 1
