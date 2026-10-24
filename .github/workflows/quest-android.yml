@@ -24,17 +24,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
+      # The runner image already has the Android SDK, so use its own sdkmanager.
       - name: Install NDK and CMake
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264" "cmake;3.22.1"
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264" "cmake;3.22.1"
 
       - name: Fetch SDL2 and SDL2_net
         run: |
@@ -45,6 +45,7 @@ jobs:
           curl -sSL "https://github.com/libsdl-org/SDL_net/releases/download/release-${SDL2_NET_VERSION}/SDL2_net-${SDL2_NET_VERSION}.tar.gz" | tar xz
           mv "SDL2_net-${SDL2_NET_VERSION}" SDL2_net
           ls SDL2/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java SDL2_net/SDLnet.c
+          find . -name gradle-wrapper.jar -delete
 
       - uses: gradle/actions/setup-gradle@v4
         with:

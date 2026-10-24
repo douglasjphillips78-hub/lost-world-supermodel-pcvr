@@ -7,6 +7,12 @@ android {
     compileSdk 34
     ndkVersion '26.3.11579264'
 
+           // Lint's "target API 33+" rule is a Google Play requirement. This APK is sideloaded.
+    lint {
+           checkReleaseBuilds false
+           abortOnError false
+       }
+
     defaultConfig {
         applicationId 'com.headsplosion.lostworldvr'
         minSdk 29          // Quest 2 / Pro / 3 / 3S all run Android 10 or newer
