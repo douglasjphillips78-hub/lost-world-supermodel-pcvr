@@ -315,6 +315,8 @@ private:
 	TextureBank			m_textureBank[2];
 
 	GLuint m_vao;
+	int m_ramSlice = 0;						// which slice of the VBO holds this frame's dynamic vertices
+	int m_ramShift = 0;						// that slice's offset (in vertices) from the first dynamic slice
 	VBO m_vbo;								// large VBO to hold our poly data, start of VBO is ROM data, ram polys follow
 	R3DShader m_r3dShader;
 	R3DScrollFog m_r3dScrollFog;
