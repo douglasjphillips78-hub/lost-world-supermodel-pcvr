@@ -68,6 +68,7 @@ public:
                                       // matches the depth of the 3D world: no double vision)
     float resolutionScale    = 1.0f;  // multiplier on the runtime's recommended eye size
     int   maxEyeWidth        = 1664;  // cap (Virtual Desktop can recommend 2500+ px per eye)
+    int   perfLevel          = 2;       // CPU/GPU performance level asked of the headset: 0 runtime default, 1 sustained low, 2 sustained high, 3 boost
     float refreshHz          = 1000.0f; // headset refresh: the highest rate offered up to this, 0 = runtime default
     bool  threadedWait       = true;   // xrWaitFrame on its own thread (emulator never waits)
     bool  hudInEye           = true;   // draw the 2D layers into the eye images (exact registration
@@ -237,6 +238,7 @@ private:
   bool m_exitRequested  = false;
   bool m_recenterPending = true;
   bool m_hasRefreshRate = false;
+  bool m_hasPerfSettings = false;
 
   int64_t m_colorFormat = 0;
 

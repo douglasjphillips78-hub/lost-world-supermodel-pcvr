@@ -34,6 +34,7 @@
 
 #define MAX_RAM_VERTS 300000
 #define MAX_ROM_VERTS 1500000
+#define RAM_SLICES 3			// dynamic vertex data rotates between slices so the upload never waits on the GPU still drawing last frame
 
 #define BYTE_TO_FLOAT(B)	((2.0f * (B) + 1.0f) * (float)(1.0/255.0))
 
@@ -96,7 +97,7 @@ CNew3D::CNew3D(const Util::Config::Node &config, const std::string& gameName) :
 
 	glGenVertexArrays(1, &m_vao);
 	glBindVertexArray(m_vao);
-	m_vbo.Create(GL_ARRAY_BUFFER, GL_DYNAMIC_DRAW, sizeof(FVertex) * (MAX_RAM_VERTS + MAX_ROM_VERTS));
+	m_vbo.Create(GL_ARRAY_BUFFER, GL_DYNAMIC_DRAW, sizeof(FVertex) * (MAX_RAM_VERTS * RAM_SLICES + MAX_ROM_VERTS));
 	m_vbo.Bind(true);
 
 	glEnableVertexAttribArray(m_r3dShader.GetVertexAttribPos("inVertex"));
@@ -442,7 +443,7 @@ bool CNew3D::RenderScene(int priority, bool renderOverlay, Layer layer)
 				}
 				
 				m_r3dShader.SetMeshUniforms(&mesh);
-				glDrawArrays(m_primType, mesh.vboOffset, mesh.vertexCount);
+				glDrawArrays(m_primType, mesh.vboOffset >= MAX_ROM_VERTS ? mesh.vboOffset + m_ramShift : mesh.vboOffset, mesh.vertexCount);
 				g_vrProf.draws++;
 			}
 			if (m.vrOnly) {
@@ -510,6 +511,8 @@ void CNew3D::RenderFrame(void)
 
 	// release any resources from last frame
 	m_polyBufferRam.clear();		// clear dynamic model memory buffer
+	m_ramSlice = (m_ramSlice + 1) % RAM_SLICES;
+	m_ramShift = m_ramSlice * MAX_RAM_VERTS;
 	m_nodes.clear();				// memory will grow during the object life time, that's fine, no need to shrink to fit
 	m_modelMat.Release();			// would hope we wouldn't need this but no harm in checking
 	m_nodeAttribs.Reset();
@@ -726,12 +729,16 @@ bool CNew3D::GetMainViewportTangents(float& left, float& right, float& top, floa
 
 void CNew3D::BuildScene(void)
 {
-	RenderViewport(0x800000);						// build model structure
+	{
+		ProfScope prof(&g_vrProf.walkMs);
+		RenderViewport(0x800000);						// build model structure
+	}
 	VRAddHandModels();								// PC VR: the gun in the player's hand
 	VRMarkParkedModels();							// PC VR: markers the game hides off-screen
 	
+	ProfScope profUpload(&g_vrProf.uploadMs);
 	m_vbo.Bind(true);
-	m_vbo.BufferSubData(MAX_ROM_VERTS*sizeof(FVertex), m_polyBufferRam.size()*sizeof(FVertex), m_polyBufferRam.data());	// upload all the dynamic data to GPU in one go
+	m_vbo.BufferSubData((MAX_ROM_VERTS + (size_t)m_ramShift)*sizeof(FVertex), m_polyBufferRam.size()*sizeof(FVertex), m_polyBufferRam.data());	// upload all the dynamic data to GPU in one go
 
 	if (!m_polyBufferRom.empty()) {
 
