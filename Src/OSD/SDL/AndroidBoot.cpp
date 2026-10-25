@@ -1,6 +1,7 @@
 #ifdef __ANDROID__
 
 #include "AndroidBoot.h"
+#include "VkBench.h"
 
 #include <SDL.h>
 #include <android/log.h>
@@ -177,6 +178,12 @@ bool Prepare(std::vector<std::string>& args)
       if (wanted.size() > 4 && wanted.compare(wanted.size() - 4, 4, ".zip") == 0)
         wanted.resize(wanted.size() - 4);
     }
+  }
+  if (wanted == "vkbench") {
+    // Not a game: the Vulkan vs OpenGL ES speed test. Result in Log/VkBench.txt.
+    const std::string report = VkBench::Run("Log/VkBench.txt");
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Vulkan test finished", report.c_str(), nullptr);
+    return false;
   }
   std::string rom, title;
   if (!wanted.empty() && Exists("ROMs/" + wanted + ".zip")) {

@@ -134,6 +134,7 @@ set(SM_CXX_SOURCES
   ${REPO}/Src/Network/NetBoard.cpp
   ${REPO}/Src/Network/SimNetBoard.cpp
   ${REPO}/Src/OSD/SDL/AndroidBoot.cpp
+  ${REPO}/Src/OSD/SDL/VkBench.cpp
   ${REPO}/Src/OSD/Unix/FileSystemPath.cpp
 )
 
@@ -181,7 +182,7 @@ target_compile_options(main PRIVATE -O3 -w)   # the PC build's warnings are not 
 set_source_files_properties(${SM_C_SOURCES} PROPERTIES COMPILE_FLAGS "-std=gnu11")
 
 if(ANDROID)
-  target_link_libraries(main PRIVATE ${SDL2_TARGET} EGL GLESv3 android log z dl m)
+  target_link_libraries(main PRIVATE ${SDL2_TARGET} EGL GLESv3 vulkan android log z dl m)
 else()
   target_link_libraries(main PRIVATE ${SDL2_TARGET} SDL2_net EGL GLESv2 z dl m pthread)
 endif()
