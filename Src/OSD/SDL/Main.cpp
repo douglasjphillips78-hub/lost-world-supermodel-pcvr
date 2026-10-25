@@ -1557,6 +1557,9 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       if (s_vrFlightStick)
         InfoLog("VR: flight stick mode for '%s' (%s, dead zone %.2f%s)", game.name.c_str(), s_vrStickAim ? "point the controller" : "thumbsticks", s_vrStickDeadZone, s_vrStickInvertY ? ", Y inverted" : "");
       vrNew3D = dynamic_cast<New3D::CNew3D *>(Render3D);
+      New3D::g_vrProfLevel = std::clamp(s_runtime_config["VRProfile"].ValueAsDefault<int>(0), 0, 2);
+      New3D::g_vrSkipFlat = !gameHasLightguns && s_runtime_config["VRSkipFlatPass"].ValueAsDefault<int>(1) != 0;
+      InfoLog("VR: profiling level %d, flat window pass %s", New3D::g_vrProfLevel, New3D::g_vrSkipFlat ? "skipped" : "drawn");
       vrModel3 = dynamic_cast<CModel3 *>(Model3);
       vrAsync = vrModel3 && vrModel3->CanRunAsync() && s_runtime_config["VRAsyncFrames"].ValueAsDefault<bool>(true);
       g_vrMirror = s_runtime_config["VRMirror"].ValueAsDefault<bool>(true);
@@ -2124,6 +2127,16 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
                 vrStatDisplay ? 1000.0 * vrStatEmuSecs / vrStatDisplay : 0.0, ppcMs, frameMs,
                 s_vrEmuFrameMs, s_vrCollectCount ? s_vrCollectWaitSum / s_vrCollectCount : 0.0, s_vrCollectWaitMax, s_vrLatched,
                 g_vrGpuMsCount ? g_vrGpuMsSum / g_vrGpuMsCount : 0.0, g_vrGpuMsWorst, swapMs, vrStatRedraw, xr->EyeWidth(), xr->EyeHeight());
+        if (New3D::g_vrProfLevel > 0)
+        {
+          const New3D::VRProf &p = New3D::g_vrProf;
+          const double f = p.frames > 0 ? (double)p.frames : 1.0;
+          const double rd = p.redraws > 0 ? (double)p.redraws : 1.0;
+          InfoLog("[VRPROF] level=%d skipFlat=%d emuFrames=%ld | per game frame: build=%.1fms flat=%.1fms sub=%.1fms eyes=%.1fms tex=%.1fms (%ld uploads) | draws=%.0f scenePasses=%.1f models=%.0f meshes=%.0f | per redraw: eyes=%.1fms (%ld redraws)",
+                  New3D::g_vrProfLevel, (int)New3D::g_vrSkipFlat, p.frames, p.buildMs / f, p.flatMs / f, p.subMs / f, p.eyesMs / f, p.texMs / f, p.texUploads,
+                  p.draws / f, p.scenes / f, p.models / f, p.meshes / f, p.redrawMs / rd, p.redraws);
+          New3D::g_vrProf = New3D::VRProf();
+        }
         s_vrCollectWaitSum = s_vrCollectWaitMax = 0.0;
         s_vrCollectCount = s_vrLatched = 0;
         g_vrGpuMsSum = 0.0;
