@@ -1133,6 +1133,10 @@ static bool  s_vrPrevLeftTrigger = false;
 static float s_vrSwingPrevX = 0.5f, s_vrSwingPrevY = 0.5f, s_vrSwingX = 0.0f, s_vrSwingY = 0.0f;
 static bool  s_vrSwingHavePrev = false;
 static uint64_t s_vrSwingTicks = 0;
+static float s_vrStickSmooth = 0.06f;     // VRStickSmoothing: seconds the pointed stick takes to settle (0 = none)
+static float s_vrStickCurve = 1.4f;       // VRStickCurve: 1 = straight; higher = finer control near the centre
+static float s_vrPtX = 0.0f, s_vrPtY = 0.0f;
+static uint64_t s_vrPtTicks = 0;
 static float s_vrSwingSpeed = 1.2f;       // VRSwingSpeed: controller speed (screen widths per second) that gives full stick
 
 static void ApplyVRInput(DesktopXR &xr)
@@ -1231,6 +1235,27 @@ static void ApplyVRInput(DesktopXR &xr)
         const float r = (std::max)(s_vrStickAimRange, 0.1f);
         sx = dead(std::clamp((in.aimX[h] - 0.5f) / r, -1.0f, 1.0f), s_vrStickDeadZone);
         sy = dead(std::clamp((0.5f - in.aimY[h]) / r, -1.0f, 1.0f), s_vrStickDeadZone);
+        // Response curve: small movements move the stick less, so steering is finer near the centre
+        // while the edge of the range still gives full stick.
+        sx = std::copysign(std::pow(std::fabs(sx), s_vrStickCurve), sx);
+        sy = std::copysign(std::pow(std::fabs(sy), s_vrStickCurve), sy);
+        // Smooth out hand tremor and the 72 Hz steps, so the ship glides instead of jittering.
+        const uint64_t pnow = SDL_GetPerformanceCounter();
+        const float pdt = s_vrPtTicks ? (float)((double)(pnow - s_vrPtTicks) / (double)SDL_GetPerformanceFrequency()) : 0.0f;
+        s_vrPtTicks = pnow;
+        if (s_vrStickSmooth > 0.001f && pdt > 0.0f && pdt < 0.25f)
+        {
+          const float a = 1.0f - std::exp(-pdt / s_vrStickSmooth);
+          s_vrPtX += (sx - s_vrPtX) * a;
+          s_vrPtY += (sy - s_vrPtY) * a;
+          sx = s_vrPtX;
+          sy = s_vrPtY;
+        }
+        else
+        {
+          s_vrPtX = sx;
+          s_vrPtY = sy;
+        }
       }
       g_vrInput.x = 0.5f + 0.5f * sx;
       g_vrInput.y = 0.5f + (s_vrStickInvertY ? 0.5f : -0.5f) * sy;
@@ -1559,6 +1584,8 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       s_vrStickDeadZone = std::clamp(s_runtime_config["VRStickDeadZone"].ValueAsDefault<float>(0.12f), 0.0f, 0.6f);
       s_vrStickAim = s_runtime_config["VRStickMode"].ValueAsDefault<int>(0) == 0;
       s_vrStickAimRange = std::clamp(s_runtime_config["VRStickAimRange"].ValueAsDefault<float>(0.5f), 0.1f, 2.0f);
+      s_vrStickSmooth = std::clamp(s_runtime_config["VRStickSmoothing"].ValueAsDefault<float>(0.06f), 0.0f, 0.5f);
+      s_vrStickCurve = std::clamp(s_runtime_config["VRStickCurve"].ValueAsDefault<float>(1.4f), 1.0f, 3.0f);
       s_vrSwingSpeed = std::clamp(s_runtime_config["VRSwingSpeed"].ValueAsDefault<float>(1.2f), 0.2f, 6.0f);
       s_vrSwing = s_runtime_config["VRSwingStart"].ValueAsDefault<int>(0) != 0;
       if (s_vrFlightStick)
