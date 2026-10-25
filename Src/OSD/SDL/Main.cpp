@@ -1127,17 +1127,12 @@ static bool  s_vrStickInvertY = false;   // VRStickInvertY = 1 if pushing forwar
 static float s_vrStickDeadZone = 0.12f;  // VRStickDeadZone: ignore drift near the centre
 static bool  s_vrStickAim = true;        // VRStickMode 0 (default): point the controller to steer; 1: thumbsticks
 static float s_vrStickAimRange = 0.5f;
-// Swing mode (light-sabre sections): the stick follows how fast the controller moves, not where it points.
-static bool  s_vrSwing = false;           // toggled with the left trigger
-static bool  s_vrPrevLeftTrigger = false;
-static float s_vrSwingPrevX = 0.5f, s_vrSwingPrevY = 0.5f, s_vrSwingX = 0.0f, s_vrSwingY = 0.0f;
-static bool  s_vrSwingHavePrev = false;
-static uint64_t s_vrSwingTicks = 0;
-static float s_vrStickSmooth = 0.06f;     // VRStickSmoothing: seconds the pointed stick takes to settle (0 = none)
-static float s_vrStickCurve = 1.4f;       // VRStickCurve: 1 = straight; higher = finer control near the centre
-static float s_vrPtX = 0.0f, s_vrPtY = 0.0f;
-static uint64_t s_vrPtTicks = 0;
-static float s_vrSwingSpeed = 1.2f;       // VRSwingSpeed: controller speed (screen widths per second) that gives full stick
+// Light-sabre sections: the gun hand's thumbstick steers instead of where the controller points.
+// Switched on and off by HOLDING the other hand's trigger (VRSaberHoldMs), so a tap never does it.
+static bool  s_vrSaber = false;
+static bool  s_vrSaberHeld = false, s_vrSaberToggled = false;
+static uint64_t s_vrSaberHeldTicks = 0;
+static float s_vrSaberHoldSec = 0.6f;
 
 static void ApplyVRInput(DesktopXR &xr)
 {
@@ -1191,71 +1186,45 @@ static void ApplyVRInput(DesktopXR &xr)
     float sx, sy;   // -1..1, +x right, +y up
     if (s_vrStickAim)
     {
-      // Light-gun style: where the controller points on the screen is where the stick is pushed
-      // (screen centre = stick centred, screen edge = full deflection). The Lost World's gun
-      // calibration (VRAimScale/Offset) is not used here: it is measured for that game only.
-      sx = sy = 0.0f;
-      // Left trigger switches between pointing (flying/shooting) and swinging (light-sabre duels)
-      if (in.trigger[0] && !s_vrPrevLeftTrigger && !s_vrMenuOpen)
-      {
-        s_vrSwing = !s_vrSwing;
-        s_vrSwingHavePrev = false;
-        s_vrSwingX = s_vrSwingY = 0.0f;
-        xr.Haptic(0, 0.8f, s_vrSwing ? 0.25f : 0.08f);   // long buzz = swing mode, short = pointing
-        InfoLog("VR: stick mode: %s", s_vrSwing ? "swing (follows controller motion)" : "point (follows where the controller aims)");
-      }
-      s_vrPrevLeftTrigger = in.trigger[0];
-      if (!s_vrMenuOpen && in.aimValid[h] && s_vrSwing)
+      const int other = 1 - h;   // the hand that is not aiming
+      // Hold that hand's trigger for a moment to switch between pointing (flying, shooting) and the
+      // thumbstick (light-sabre sections). A buzz in that hand says it changed: long = thumbstick.
+      const bool hold = in.trigger[other] && !s_vrMenuOpen;
+      if (hold)
       {
         const uint64_t now = SDL_GetPerformanceCounter();
-        const float dt = s_vrSwingTicks ? (float)((double)(now - s_vrSwingTicks) / (double)SDL_GetPerformanceFrequency()) : 0.0f;
-        s_vrSwingTicks = now;
-        float tx = 0.0f, ty = 0.0f;
-        if (s_vrSwingHavePrev && dt > 0.0005f && dt < 0.25f)
+        if (!s_vrSaberHeld)
         {
-          // controller speed over the virtual screen; small movements (hand tremor) are ignored
-          const float vx = (in.aimX[h] - s_vrSwingPrevX) / dt, vy = (s_vrSwingPrevY - in.aimY[h]) / dt;   // +x right, +y up
-          const float spd = (std::max)(s_vrSwingSpeed, 0.2f);
-          tx = dead(std::clamp(vx / spd, -1.0f, 1.0f), 0.1f);
-          ty = dead(std::clamp(vy / spd, -1.0f, 1.0f), 0.1f);
-          // quick to follow a swing, a touch of smoothing so the stick does not flicker
-          const float a = 1.0f - std::exp(-dt / 0.03f);
-          s_vrSwingX += (tx - s_vrSwingX) * a;
-          s_vrSwingY += (ty - s_vrSwingY) * a;
+          s_vrSaberHeld = true;
+          s_vrSaberHeldTicks = now;
         }
-        s_vrSwingPrevX = in.aimX[h];
-        s_vrSwingPrevY = in.aimY[h];
-        s_vrSwingHavePrev = true;
-        sx = s_vrSwingX;
-        sy = s_vrSwingY;
+        else if (!s_vrSaberToggled && (double)(now - s_vrSaberHeldTicks) / (double)SDL_GetPerformanceFrequency() >= s_vrSaberHoldSec)
+        {
+          s_vrSaberToggled = true;
+          s_vrSaber = !s_vrSaber;
+          xr.Haptic(other, 0.8f, s_vrSaber ? 0.25f : 0.08f);
+          InfoLog("VR: steering: %s", s_vrSaber ? "thumbstick (light sabre)" : "point the controller");
+        }
+      }
+      else
+      {
+        s_vrSaberHeld = false;
+        s_vrSaberToggled = false;
+      }
+      sx = sy = 0.0f;
+      if (!s_vrMenuOpen && s_vrSaber)
+      {
+        sx = dead(std::clamp(in.stick[h][0], -1.0f, 1.0f), s_vrStickDeadZone);
+        sy = dead(std::clamp(in.stick[h][1], -1.0f, 1.0f), s_vrStickDeadZone);
       }
       else if (!s_vrMenuOpen && in.aimValid[h])
       {
-        s_vrSwingHavePrev = false;
+        // Light-gun style: where the controller points on the screen is where the stick is pushed
+        // (screen centre = stick centred, screen edge = full deflection). The Lost World's gun
+        // calibration (VRAimScale/Offset) is not used here: it is measured for that game only.
         const float r = (std::max)(s_vrStickAimRange, 0.1f);
         sx = dead(std::clamp((in.aimX[h] - 0.5f) / r, -1.0f, 1.0f), s_vrStickDeadZone);
         sy = dead(std::clamp((0.5f - in.aimY[h]) / r, -1.0f, 1.0f), s_vrStickDeadZone);
-        // Response curve: small movements move the stick less, so steering is finer near the centre
-        // while the edge of the range still gives full stick.
-        sx = std::copysign(std::pow(std::fabs(sx), s_vrStickCurve), sx);
-        sy = std::copysign(std::pow(std::fabs(sy), s_vrStickCurve), sy);
-        // Smooth out hand tremor and the 72 Hz steps, so the ship glides instead of jittering.
-        const uint64_t pnow = SDL_GetPerformanceCounter();
-        const float pdt = s_vrPtTicks ? (float)((double)(pnow - s_vrPtTicks) / (double)SDL_GetPerformanceFrequency()) : 0.0f;
-        s_vrPtTicks = pnow;
-        if (s_vrStickSmooth > 0.001f && pdt > 0.0f && pdt < 0.25f)
-        {
-          const float a = 1.0f - std::exp(-pdt / s_vrStickSmooth);
-          s_vrPtX += (sx - s_vrPtX) * a;
-          s_vrPtY += (sy - s_vrPtY) * a;
-          sx = s_vrPtX;
-          sy = s_vrPtY;
-        }
-        else
-        {
-          s_vrPtX = sx;
-          s_vrPtY = sy;
-        }
       }
       g_vrInput.x = 0.5f + 0.5f * sx;
       g_vrInput.y = 0.5f + (s_vrStickInvertY ? 0.5f : -0.5f) * sy;
@@ -1584,10 +1553,8 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       s_vrStickDeadZone = std::clamp(s_runtime_config["VRStickDeadZone"].ValueAsDefault<float>(0.12f), 0.0f, 0.6f);
       s_vrStickAim = s_runtime_config["VRStickMode"].ValueAsDefault<int>(0) == 0;
       s_vrStickAimRange = std::clamp(s_runtime_config["VRStickAimRange"].ValueAsDefault<float>(0.5f), 0.1f, 2.0f);
-      s_vrStickSmooth = std::clamp(s_runtime_config["VRStickSmoothing"].ValueAsDefault<float>(0.06f), 0.0f, 0.5f);
-      s_vrStickCurve = std::clamp(s_runtime_config["VRStickCurve"].ValueAsDefault<float>(1.4f), 1.0f, 3.0f);
-      s_vrSwingSpeed = std::clamp(s_runtime_config["VRSwingSpeed"].ValueAsDefault<float>(1.2f), 0.2f, 6.0f);
-      s_vrSwing = s_runtime_config["VRSwingStart"].ValueAsDefault<int>(0) != 0;
+      s_vrSaber = s_runtime_config["VRSaberStart"].ValueAsDefault<int>(0) != 0;
+      s_vrSaberHoldSec = std::clamp(s_runtime_config["VRSaberHoldMs"].ValueAsDefault<int>(600), 200, 3000) / 1000.0f;
       if (s_vrFlightStick)
         InfoLog("VR: flight stick mode for '%s' (%s, dead zone %.2f%s)", game.name.c_str(), s_vrStickAim ? "point the controller" : "thumbsticks", s_vrStickDeadZone, s_vrStickInvertY ? ", Y inverted" : "");
       vrNew3D = dynamic_cast<New3D::CNew3D *>(Render3D);
