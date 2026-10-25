@@ -1514,6 +1514,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       vc.hideP2Prompt       = s_runtime_config["VRHideP2Prompt"].ValueAsDefault<bool>(vc.hideP2Prompt);
       vc.staticFill         = s_runtime_config["VRStaticFill"].ValueAsDefault<bool>(vc.staticFill);
       vc.backdropFill       = s_runtime_config["VRBackdropFill"].ValueAsDefault<bool>(vc.backdropFill);
+      vc.perfLevel          = std::clamp(s_runtime_config["VRPerfLevel"].ValueAsDefault<int>(vc.perfLevel), 0, 3);
       VRReadSettings();
       vc.resolutionScale    = s_vrSettings.renderScale;
       vc.vignette           = s_vrSettings.vignette;
@@ -2132,8 +2133,8 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
           const New3D::VRProf &p = New3D::g_vrProf;
           const double f = p.frames > 0 ? (double)p.frames : 1.0;
           const double rd = p.redraws > 0 ? (double)p.redraws : 1.0;
-          InfoLog("[VRPROF] level=%d skipFlat=%d emuFrames=%ld | per game frame: build=%.1fms flat=%.1fms sub=%.1fms eyes=%.1fms tex=%.1fms (%ld uploads) | draws=%.0f scenePasses=%.1f models=%.0f meshes=%.0f | per redraw: eyes=%.1fms (%ld redraws)",
-                  New3D::g_vrProfLevel, (int)New3D::g_vrSkipFlat, p.frames, p.buildMs / f, p.flatMs / f, p.subMs / f, p.eyesMs / f, p.texMs / f, p.texUploads,
+          InfoLog("[VRPROF] level=%d skipFlat=%d emuFrames=%ld | per game frame: build=%.1fms (walk %.1f, upload %.1f) flat=%.1fms sub=%.1fms eyes=%.1fms tex=%.1fms (%ld uploads) | draws=%.0f scenePasses=%.1f models=%.0f meshes=%.0f | per redraw: eyes=%.1fms (%ld redraws)",
+                  New3D::g_vrProfLevel, (int)New3D::g_vrSkipFlat, p.frames, p.buildMs / f, p.walkMs / f, p.uploadMs / f, p.flatMs / f, p.subMs / f, p.eyesMs / f, p.texMs / f, p.texUploads,
                   p.draws / f, p.scenes / f, p.models / f, p.meshes / f, p.redrawMs / rd, p.redraws);
           New3D::g_vrProf = New3D::VRProf();
         }

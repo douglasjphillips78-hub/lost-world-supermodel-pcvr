@@ -118,7 +118,7 @@ extern std::string g_vrHandTexCachePath;
 // (glFinish), so the times are real but the game runs slower while measuring.
 struct VRProf
 {
-	double	buildMs = 0, flatMs = 0, subMs = 0, eyesMs = 0, redrawMs = 0, texMs = 0;
+	double	buildMs = 0, walkMs = 0, uploadMs = 0, flatMs = 0, subMs = 0, eyesMs = 0, redrawMs = 0, texMs = 0;
 	long	frames = 0, redraws = 0, draws = 0, scenes = 0, models = 0, meshes = 0, texUploads = 0;
 };
 extern VRProf g_vrProf;

@@ -726,10 +726,14 @@ bool CNew3D::GetMainViewportTangents(float& left, float& right, float& top, floa
 
 void CNew3D::BuildScene(void)
 {
-	RenderViewport(0x800000);						// build model structure
+	{
+		ProfScope prof(&g_vrProf.walkMs);
+		RenderViewport(0x800000);						// build model structure
+	}
 	VRAddHandModels();								// PC VR: the gun in the player's hand
 	VRMarkParkedModels();							// PC VR: markers the game hides off-screen
 	
+	ProfScope profUpload(&g_vrProf.uploadMs);
 	m_vbo.Bind(true);
 	m_vbo.BufferSubData(MAX_ROM_VERTS*sizeof(FVertex), m_polyBufferRam.size()*sizeof(FVertex), m_polyBufferRam.data());	// upload all the dynamic data to GPU in one go
 

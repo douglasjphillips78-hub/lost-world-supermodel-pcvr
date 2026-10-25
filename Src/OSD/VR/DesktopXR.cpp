@@ -90,6 +90,7 @@ XR_INSTANCE_FUNCS(XR_DECLARE)
 PFN_xrRequestDisplayRefreshRateFB pfnRequestDisplayRefreshRateFB = nullptr;
 PFN_xrEnumerateDisplayRefreshRatesFB pfnEnumerateDisplayRefreshRatesFB = nullptr;
 PFN_xrGetDisplayRefreshRateFB pfnGetDisplayRefreshRateFB = nullptr;
+PFN_xrPerfSettingsSetPerformanceLevelEXT pfnPerfSettingsSetLevel = nullptr;
 
 void QuatToMat3(const XrQuaternionf& q, float m[9])
 {
@@ -408,6 +409,9 @@ bool DesktopXR::CreateInstance()
   m_hasRefreshRate = has(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
   if (m_hasRefreshRate)
     enabled.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+  m_hasPerfSettings = has(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
+  if (m_hasPerfSettings)
+    enabled.push_back(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
 
   XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
   std::strncpy(ci.applicationInfo.applicationName, "Supermodel VR", XR_MAX_APPLICATION_NAME_SIZE - 1);
@@ -440,6 +444,8 @@ bool DesktopXR::CreateInstance()
 #define XR_LOAD_INSTANCE(name) XR_LOAD_INSTANCE_(name)
   XR_INSTANCE_FUNCS(XR_LOAD_INSTANCE)
 #undef XR_LOAD_INSTANCE
+  if (m_hasPerfSettings)
+    xrGetInstanceProcAddr(m_instance, "xrPerfSettingsSetPerformanceLevelEXT", reinterpret_cast<PFN_xrVoidFunction*>(&pfnPerfSettingsSetLevel));
   if (m_hasRefreshRate) {
     xrGetInstanceProcAddr(m_instance, "xrRequestDisplayRefreshRateFB", reinterpret_cast<PFN_xrVoidFunction*>(&pfnRequestDisplayRefreshRateFB));
     xrGetInstanceProcAddr(m_instance, "xrEnumerateDisplayRefreshRatesFB", reinterpret_cast<PFN_xrVoidFunction*>(&pfnEnumerateDisplayRefreshRatesFB));
@@ -1183,6 +1189,18 @@ void DesktopXR::HandleSessionState(XrSessionState state)
         InfoLog("VR: session running");
         if (m_config.threadedWait)
           StartWaitThread();
+        if (pfnPerfSettingsSetLevel && m_config.perfLevel > 0) {
+          // The headset runs its CPU and GPU at modest clocks unless the app asks for more; the
+          // emulator is CPU-heavy, so ask for the sustained-high (or boost) level.
+          const XrPerfSettingsLevelEXT level = m_config.perfLevel >= 3 ? XR_PERF_SETTINGS_LEVEL_BOOST_EXT
+                                             : m_config.perfLevel == 2 ? XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT
+                                                                       : XR_PERF_SETTINGS_LEVEL_SUSTAINED_LOW_EXT;
+          const XrResult rc = pfnPerfSettingsSetLevel(m_session, XR_PERF_SETTINGS_DOMAIN_CPU_EXT, level);
+          const XrResult rg = pfnPerfSettingsSetLevel(m_session, XR_PERF_SETTINGS_DOMAIN_GPU_EXT, level);
+          InfoLog("VR: performance level %d requested (CPU -> %d, GPU -> %d)", m_config.perfLevel, (int)rc, (int)rg);
+        }
+        else
+          InfoLog("VR: performance level not set (%s)", pfnPerfSettingsSetLevel ? "VRPerfLevel 0" : "the runtime has no XR_EXT_performance_settings");
         if (pfnRequestDisplayRefreshRateFB && m_config.refreshHz > 0.f) {
           // The highest refresh the headset offers, up to VRRefreshHz. (Asking for a rate the
           // runtime doesn't list is refused - e.g. Virtual Desktop only offers the rate chosen
