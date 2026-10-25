@@ -78,6 +78,7 @@ public:
     bool  hideP2Prompt       = true;   // leave out player 2's "PRESS START BUTTON" during play
     bool  staticFill         = true;   // extend the game's hit "static" and full-screen tints over the whole view
     bool  backdropFill       = true;   // continue the game's background (sky) past its 4:3 screen, mirrored
+    int   skyDome            = 1;      // 0 flat picture; 1 wrap the sky all round you (mirrored sideways, edge colours up/down); 2 edge colours everywhere
     int   vignette           = 2;      // comfort vignette during fast camera turns, 0 off .. 3 strong
     int   hudFilter          = 1;      // 2D layer scaling: 0 soft, 1 sharp, 2 smooth edges
     float aimNudgeX          = 0.f;    // aim fine-tune, degrees
@@ -286,6 +287,8 @@ private:
   New3D::VREye m_curEye[2];
   GLuint m_quadProgram = 0;     // textured quad (backdrop + HUD)
   GLint  m_uMvp = -1, m_uTex = -1, m_uRect = -1, m_uMode = -1, m_uKeep = -1, m_uSubUv = -1, m_uGlow = -1;
+  GLuint m_skyProgram = 0;      // sky wrapped round the player (VRSkyDome)
+  GLint  m_uSkyMvp = -1, m_uSkyTex = -1, m_uSkyRect = -1;
   GLuint m_dotProgram = 0;      // pointer dots on the HUD
   GLint  m_uDotCenter = -1, m_uDotRadius = -1, m_uDotColor = -1, m_uDotAspect = -1;
   GLuint m_vao = 0;
