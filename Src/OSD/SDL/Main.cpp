@@ -1123,6 +1123,7 @@ static int s_vrDbgButtons = 0;   // debug: coin/start/trigger from SM_DBG_AIM
 // use: Supermodel binds the analog joystick axes to the mouse axes by default (InputAnalogJoyX =
 // JOY_XAXIS,MOUSE_XAXIS), and with the mouse in the middle of the game area the stick is centred.
 static bool  s_vrFlightStick = false;
+static bool  s_vrSaberInvertY = true;    // VRSaberInvertY: lightsaber thumbstick up/down flipped (left/right unchanged)
 static bool  s_vrStickInvertY = false;   // VRStickInvertY = 1 if pushing forward climbs instead of dives
 static float s_vrStickDeadZone = 0.12f;  // VRStickDeadZone: ignore drift near the centre
 static bool  s_vrStickAim = true;        // VRStickMode 0 (default): point the controller to steer; 1: thumbsticks
@@ -1216,6 +1217,7 @@ static void ApplyVRInput(DesktopXR &xr)
       {
         sx = dead(std::clamp(in.stick[h][0], -1.0f, 1.0f), s_vrStickDeadZone);
         sy = dead(std::clamp(in.stick[h][1], -1.0f, 1.0f), s_vrStickDeadZone);
+        if (s_vrSaberInvertY) sy = -sy;
       }
       else if (!s_vrMenuOpen && in.aimValid[h])
       {
@@ -1550,6 +1552,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       s_vrAimOffsetY = s_runtime_config["VRAimOffsetY"].ValueAsDefault<float>(0.0f);
       g_vrInput.active = true;
       s_vrFlightStick = (game.inputs & Game::INPUT_ANALOG_JOYSTICK) && !gameHasLightguns;
+      s_vrSaberInvertY = s_runtime_config["VRSaberInvertY"].ValueAsDefault<bool>(true);
       s_vrStickInvertY = s_runtime_config["VRStickInvertY"].ValueAsDefault<bool>(false);
       s_vrStickDeadZone = std::clamp(s_runtime_config["VRStickDeadZone"].ValueAsDefault<float>(0.12f), 0.0f, 0.6f);
       s_vrStickAim = s_runtime_config["VRStickMode"].ValueAsDefault<int>(0) == 0;
