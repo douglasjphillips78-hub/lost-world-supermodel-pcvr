@@ -30,6 +30,7 @@
 #include <map>
 #include "R3DFloat.h"
 #include "Util/BitCast.h"
+#include <chrono>
 
 #define MAX_RAM_VERTS 300000
 #define MAX_ROM_VERTS 1500000
@@ -180,8 +181,35 @@ Result CNew3D::Init(unsigned xOffset, unsigned yOffset, unsigned xRes, unsigned 
 	return m_r3dFrameBuffers.CreateFBO(totalXResParam, totalYResParam);
 }
 
+VRProf g_vrProf;
+int  g_vrProfLevel = 0;
+bool g_vrSkipFlat = false;
+
+// Adds the time spent in a scope to one of the VRProf counters (nothing when VRProfile is 0).
+struct ProfScope
+{
+	double* acc;
+	std::chrono::steady_clock::time_point t0;
+	explicit ProfScope(double* a) : acc(a)
+	{
+		if (g_vrProfLevel) {
+			if (g_vrProfLevel > 1) glFinish();
+			t0 = std::chrono::steady_clock::now();
+		}
+	}
+	~ProfScope()
+	{
+		if (g_vrProfLevel) {
+			if (g_vrProfLevel > 1) glFinish();
+			*acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+		}
+	}
+};
+
 void CNew3D::UploadTextures(unsigned level, unsigned x, unsigned y, unsigned width, unsigned height)
 {
+	ProfScope prof(&g_vrProf.texMs);
+	g_vrProf.texUploads++;
 	// handle case of entire sheet invalidation
 	if (width == 2048 && height == 2048) {
 
@@ -367,6 +395,7 @@ bool CNew3D::RenderScene(int priority, bool renderOverlay, Layer layer)
 	glActiveTexture(GL_TEXTURE0);
 
 	bool hasOverlay = false;		// (high priority polys)
+	g_vrProf.scenes++;
 
 	for (auto &n : m_nodes) {
 
@@ -414,6 +443,7 @@ bool CNew3D::RenderScene(int priority, bool renderOverlay, Layer layer)
 				
 				m_r3dShader.SetMeshUniforms(&mesh);
 				glDrawArrays(m_primType, mesh.vboOffset, mesh.vertexCount);
+				g_vrProf.draws++;
 			}
 			if (m.vrOnly) {
 				m_r3dShader.SetVRHandLight(false);
@@ -507,17 +537,46 @@ void CNew3D::RenderFrame(void)
 		return;
 	}
 
-	BuildScene();
+	{
+		ProfScope prof(&g_vrProf.buildMs);
+		BuildScene();
+	}
+	if (g_vrProfLevel) {
+		g_vrProf.frames++;
+		for (const auto& n : m_nodes) {
+			g_vrProf.models += (long)n.models.size();
+			for (const auto& m : n.models) {
+				g_vrProf.meshes += m.meshes ? (long)m.meshes->size() : 0;
+			}
+		}
+	}
 
 	// Flat pass at the original projection: feeds the desktop window and, importantly, the
-	// line-of-sight (LOS) depth/stencil reads that light gun games use to aim.
-	DrawScene(m_r3dFrameBuffers, true, m_aaTarget);
+	// line-of-sight (LOS) depth/stencil reads that light gun games use to aim. The headset does
+	// not show it and games without light guns do not read it, so VR can leave it out
+	// (g_vrSkipFlat): it is a whole extra draw of the scene.
+	IVRFrameTarget* vrTarget = GetVRFrameTarget();
+	if (vrTarget && g_vrSkipFlat && !vrTarget->WantsFlat()) {
+		for (auto& n : m_nodes) {
+			CalcViewport(&n.viewport);		// what DrawScene() would have done first
+		}
+	}
+	else {
+		ProfScope prof(&g_vrProf.flatMs);
+		DrawScene(m_r3dFrameBuffers, true, m_aaTarget);
+	}
 
 	m_vrSceneValid = true;
 	if (GetVRFrameTarget()) {
 		MeasureCameraTurn();
-		DrawVRSubViewports();
-		DrawEyes(true);
+		{
+			ProfScope prof(&g_vrProf.subMs);
+			DrawVRSubViewports();
+		}
+		{
+			ProfScope prof(&g_vrProf.eyesMs);
+			DrawEyes(true);
+		}
 	}
 }
 
@@ -601,6 +660,8 @@ GLuint CNew3D::GetVRSubTexture(float uv[4]) const
 void CNew3D::RedrawVR(void)
 {
 	if (m_vrSceneValid && GetVRFrameTarget()) {
+		ProfScope prof(&g_vrProf.redrawMs);
+		g_vrProf.redraws++;
 		DrawEyes(false);
 	}
 }

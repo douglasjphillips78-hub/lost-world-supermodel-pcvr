@@ -112,8 +112,24 @@ extern std::vector<unsigned> g_vrHandPrefetch;
 // Saves folder; made from their ROM on their machine). Empty: not kept. Set by the platform layer.
 extern std::string g_vrHandTexCachePath;
 
+// Frame-time breakdown for the headset build (VRProfile in Supermodel.ini; the platform layer prints it).
+// Times are milliseconds summed since the last print. Level 1 = how long the CPU spends in each
+// stage (including the graphics driver's work); level 2 also waits for the GPU after each stage
+// (glFinish), so the times are real but the game runs slower while measuring.
+struct VRProf
+{
+	double	buildMs = 0, flatMs = 0, subMs = 0, eyesMs = 0, redrawMs = 0, texMs = 0;
+	long	frames = 0, redraws = 0, draws = 0, scenes = 0, models = 0, meshes = 0, texUploads = 0;
+};
+extern VRProf g_vrProf;
+extern int  g_vrProfLevel;		// 0 off, 1 CPU timers, 2 + GPU wait
+// Skip the flat (window-sized) 3D pass in VR: it only feeds the desktop window and the light-gun
+// aim reads, so games without light guns do not need it. Set by the platform layer.
+extern bool g_vrSkipFlat;
+
 class IVRFrameTarget
 {
+public:
 public:
 	virtual ~IVRFrameTarget() = default;
 
