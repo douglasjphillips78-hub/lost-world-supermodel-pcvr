@@ -162,6 +162,56 @@ void main() {
   gl_Position = uMvp * vec4(left ? uRect.x : uRect.y, bottom ? uRect.w : uRect.z, -1.0, 1.0);
 })";
 
+// Sky wrapped round the player: a sphere of directions, textured with the game's background.
+// Inside the game's own screen the picture is exactly where the game puts it (so the sky lines up
+// with the 3D scene); outside it the picture carries on at the same scale per degree, instead of
+// being stretched flat. Behind the player the picture settles on one column (no seam).
+const char* kSkyVS = R"(#version 330 core
+uniform mat4 uMvp;
+out vec3 vDir;
+void main() {
+  const int N = 64, M = 32;
+  int q = gl_VertexID / 6, c = gl_VertexID % 6;
+  int i = q % N, j = q / N;
+  // two triangles per grid cell: corners (0,0) (1,0) (0,1)  (1,0) (1,1) (0,1)
+  int cx = (c == 1 || c == 3 || c == 4) ? 1 : 0;
+  int cy = (c == 2 || c == 4 || c == 5) ? 1 : 0;
+  float az = (float(i + cx) / float(N) * 2.0 - 1.0) * 3.14159265;
+  float el = (float(j + cy) / float(M) - 0.5) * 3.14159265;
+  vec3 d = vec3(sin(az) * cos(el), sin(el), -cos(az) * cos(el));
+  vDir = d;
+  gl_Position = uMvp * vec4(d * 5.0, 1.0);
+})";
+
+const char* kSkyFS = R"(#version 330 core
+uniform sampler2D uTex;
+uniform vec4 uRect;   // the game's screen at z = -1: left, right, top, bottom (tangents)
+in vec3 vDir;
+out vec4 fragColor;
+// A coordinate along one axis of the game's screen: the exact tangent inside [lo, hi], carrying
+// on at the same slope per radian outside it.
+float carryOn(float a, float lo, float hi) {
+  float aLo = atan(lo), aHi = atan(hi);
+  if (a > aHi) return hi + (a - aHi) * (1.0 + hi * hi);
+  if (a < aLo) return lo + (a - aLo) * (1.0 + lo * lo);
+  return tan(a);
+}
+void main() {
+  vec3 d = normalize(vDir);
+  float aLo = atan(uRect.x), aHi = atan(uRect.y);
+  float az = atan(d.x, -d.z);
+  float el = atan(d.y, length(d.xz));
+  float azC = clamp(az, aLo, aHi);
+  float ty = tan(el) / cos(azC);                // what the game's screen sees on this row
+  float px = carryOn(az, uRect.x, uRect.y);
+  float py = carryOn(atan(ty), uRect.w, uRect.z);
+  // Sideways the picture is mirrored every screen-width. Holding u to [-1.5, 2.5] makes both ends of
+  // the range fold to the same column, so there is no seam directly behind the player.
+  float u = clamp((px - uRect.x) / (uRect.y - uRect.x), -1.5, 2.5);
+  vec2 uv = vec2(u, (uRect.z - py) / (uRect.z - uRect.w));
+  fragColor = vec4(texture(uTex, uv).rgb, 1.0);
+})";
+
 const char* kQuadFS = R"(#version 330 core
 uniform sampler2D uTex;
 uniform int uMode;
@@ -1008,6 +1058,12 @@ bool DesktopXR::CreateShaders()
 {
   m_quadProgram = LinkProgram(kQuadVS, kQuadFS);
   m_dotProgram = LinkProgram(kDotVS, kDotFS);
+  m_skyProgram = LinkProgram(kSkyVS, kSkyFS);   // optional: without it the flat backdrop is used
+  if (m_skyProgram) {
+    m_uSkyMvp  = glGetUniformLocation(m_skyProgram, "uMvp");
+    m_uSkyTex  = glGetUniformLocation(m_skyProgram, "uTex");
+    m_uSkyRect = glGetUniformLocation(m_skyProgram, "uRect");
+  }
   if (!m_quadProgram || !m_dotProgram)
     return Fail("VR shaders failed to build");
   m_uMvp  = glGetUniformLocation(m_quadProgram, "uMvp");
@@ -2645,6 +2701,28 @@ void DesktopXR::DrawBackdrop(const New3D::VREye& eye)
   glDisable(GL_BLEND);
   glDisable(GL_CULL_FACE);
   glDisable(GL_STENCIL_TEST);
+  if (m_skyProgram && m_config.skyDome > 0 && m_scene3D) {
+    // The sky wrapped all round you (only while a 3D scene is on screen; menus stay a framed picture).
+    GLint wrapS = GL_CLAMP_TO_EDGE, wrapT = GL_CLAMP_TO_EDGE;
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, m_backdropTex);
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &wrapS);
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, &wrapT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, m_config.skyDome == 1 ? GL_MIRRORED_REPEAT : GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glUseProgram(m_skyProgram);
+    glUniformMatrix4fv(m_uSkyMvp, 1, GL_FALSE, mvp);
+    glUniform1i(m_uSkyTex, 0);
+    glUniform4f(m_uSkyRect, m_gameL, m_gameR, m_gameT, m_gameB);
+    glBindVertexArray(m_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 64 * 32 * 6);
+    glBindVertexArray(0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glUseProgram(0);
+    return;
+  }
   glUseProgram(m_quadProgram);
   glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, mvp);
   glUniform1i(m_uMode, 0);

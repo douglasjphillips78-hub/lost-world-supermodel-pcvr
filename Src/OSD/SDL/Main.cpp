@@ -1517,6 +1517,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       vc.staticFill         = s_runtime_config["VRStaticFill"].ValueAsDefault<bool>(vc.staticFill);
       vc.backdropFill       = s_runtime_config["VRBackdropFill"].ValueAsDefault<bool>(vc.backdropFill);
       vc.perfLevel          = std::clamp(s_runtime_config["VRPerfLevel"].ValueAsDefault<int>(vc.perfLevel), 0, 3);
+      vc.skyDome            = std::clamp(s_runtime_config["VRSkyDome"].ValueAsDefault<int>(vc.skyDome), 0, 2);
       VRReadSettings();
       vc.resolutionScale    = s_vrSettings.renderScale;
       vc.vignette           = s_vrSettings.vignette;
