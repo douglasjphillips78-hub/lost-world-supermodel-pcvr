@@ -2709,7 +2709,9 @@ void DesktopXR::DrawBackdrop(const New3D::VREye& eye)
     glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &wrapS);
     glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, &wrapT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, m_config.skyDome == 1 ? GL_MIRRORED_REPEAT : GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    // Above and below the game's own screen the picture is mirrored too. Clamping instead smeared the
+    // top and bottom row of pixels into long streaks.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, m_config.skyDome == 1 ? GL_MIRRORED_REPEAT : GL_CLAMP_TO_EDGE);
     glUseProgram(m_skyProgram);
     glUniformMatrix4fv(m_uSkyMvp, 1, GL_FALSE, mvp);
     glUniform1i(m_uSkyTex, 0);
