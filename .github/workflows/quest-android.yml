@@ -20,6 +20,15 @@ env:
 jobs:
   apk:
     runs-on: ubuntu-22.04
+    # Two installable apps from the same code: Star Wars Trilogy VR and The Lost World VR.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: StarWarsTrilogyVR
+            lostWorld: 'false'
+          - name: LostWorldVR
+            lostWorld: 'true'
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -51,8 +60,11 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Decode the signing key
+        run: base64 -d Android/app/sideload.keystore.b64 > Android/app/sideload.keystore
+
       - name: Build APK
-        run: gradle -p Android :app:assembleRelease --no-daemon --stacktrace
+        run: gradle -p Android :app:assembleRelease -PlostWorld=${{ matrix.lostWorld }} --no-daemon --stacktrace
 
       - name: Check the APK contents
         run: |
@@ -62,15 +74,15 @@ jobs:
           for need in lib/arm64-v8a/libmain.so lib/arm64-v8a/libSDL2.so lib/arm64-v8a/libopenxr_loader.so assets/manifest.txt assets/Config/Games.xml; do
             grep -q "$need" apk-contents.txt || { echo "MISSING in APK: $need"; exit 1; }
           done
-          mkdir -p dist && cp "$apk" dist/LostWorldVR-quest.apk
+          mkdir -p dist && cp "$apk" dist/${{ matrix.name }}-quest.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LostWorldVR-quest
-          path: dist/LostWorldVR-quest.apk
+          name: ${{ matrix.name }}-quest
+          path: dist/${{ matrix.name }}-quest.apk
 
       - name: Publish release asset
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/LostWorldVR-quest.apk
+          files: dist/${{ matrix.name }}-quest.apk

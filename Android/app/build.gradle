@@ -2,6 +2,10 @@ plugins {
     id 'com.android.application'
 }
 
+// -PlostWorld=true builds the same app as its own install for The Lost World (different app id and name),
+// so Star Wars Trilogy and The Lost World can sit side by side on the headset.
+def lostWorldBuild = project.findProperty('lostWorld') == 'true'
+
 android {
     namespace 'com.headsplosion.lostworldvr'
     compileSdk 34
@@ -14,7 +18,8 @@ android {
        }
 
     defaultConfig {
-        applicationId 'com.headsplosion.starwarsvr'
+        applicationId lostWorldBuild ? 'com.headsplosion.lostworldvr' : 'com.headsplosion.starwarsvr'
+        manifestPlaceholders = [appLabel: lostWorldBuild ? 'The Lost World VR' : 'Star Wars Trilogy VR']
         minSdk 29          // Quest 2 / Pro / 3 / 3S all run Android 10 or newer
         targetSdk 32
         versionCode 1
@@ -41,11 +46,21 @@ android {
         assets.srcDir(layout.buildDirectory.dir('generated/bundledAssets'))
     }
 
+    // One fixed signing key for every build (sideloaded app, so nothing secret). The auto-generated debug
+    // key is new on every CI run, which makes Android refuse to update an installed copy.
+    signingConfigs {
+        sideload {
+            storeFile file('sideload.keystore')
+            storePassword 'android'
+            keyAlias 'sideload'
+            keyPassword 'android'
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
-            // A sideloaded APK only has to be signed; the auto-generated debug key is fine for that.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.sideload
         }
     }
     compileOptions {
