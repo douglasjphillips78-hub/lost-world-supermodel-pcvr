@@ -227,8 +227,22 @@ uint32_t CReal3D::SyncSnapshots(void)
     return 0;
 
   // Update read-only queue
-  queuedUploadTexturesRO = queuedUploadTextures;
+  // Append, never replace: the VR loop can collect two emulator frames before it draws one, and
+  // replacing the list would drop the first frame's texture uploads (wrong textures until the game
+  // happens to upload them again). If a lot pile up, one full-sheet refresh covers them all.
+  queuedUploadTexturesRO.insert(queuedUploadTexturesRO.end(), queuedUploadTextures.begin(), queuedUploadTextures.end());
   queuedUploadTextures.clear();
+  if (queuedUploadTexturesRO.size() > 2000)
+  {
+    queuedUploadTexturesRO.clear();
+    QueuedUploadTextures all;
+    all.level = 0;
+    all.x = 0;
+    all.y = 0;
+    all.width = 2048;
+    all.height = 2048;
+    queuedUploadTexturesRO.push_back(all);
+  }
 
   Render3D->SetBlockCulling(m_blockCullingRO);
 
