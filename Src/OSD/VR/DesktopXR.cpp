@@ -185,7 +185,8 @@ void main() {
 
 const char* kSkyFS = R"(#version 330 core
 uniform sampler2D uTex;
-uniform vec4 uRect;   // the game's screen at z = -1: left, right, top, bottom (tangents)
+uniform vec4 uRect;    // the game's screen at z = -1: left, right, top, bottom (tangents)
+uniform float uCloud;  // how far down the picture the clouds go (below that are the tree tops)
 in vec3 vDir;
 out vec4 fragColor;
 // A coordinate along one axis of the game's screen: the exact tangent inside [lo, hi], carrying
@@ -196,6 +197,15 @@ float carryOn(float a, float lo, float hi) {
   if (a < aLo) return lo + (a - aLo) * (1.0 + lo * lo);
   return tan(a);
 }
+// Picture row above or below the game's screen: fold back and forth inside the cloud part only,
+// so the tree-line at the bottom of the picture never shows up in the sky.
+float foldV(float v, float c) {
+  if (v >= 0.0 && v <= 1.0) return v;
+  float x = (v < 0.0) ? -v : v - 1.0;
+  float p = 2.0 * c;
+  float m = mod(x, p);
+  return (m < c) ? m : p - m;
+}
 void main() {
   vec3 d = normalize(vDir);
   float aLo = atan(uRect.x), aHi = atan(uRect.y);
@@ -203,13 +213,32 @@ void main() {
   float el = atan(d.y, length(d.xz));
   float azC = clamp(az, aLo, aHi);
   float ty = tan(el) / cos(azC);                // what the game's screen sees on this row
-  float px = carryOn(az, uRect.x, uRect.y);
   float py = carryOn(atan(ty), uRect.w, uRect.z);
-  // Sideways the picture is mirrored every screen-width. Holding u to [-1.5, 2.5] makes both ends of
-  // the range fold to the same column, so there is no seam directly behind the player.
-  float u = clamp((px - uRect.x) / (uRect.y - uRect.x), -1.5, 2.5);
-  vec2 uv = vec2(u, (uRect.z - py) / (uRect.z - uRect.w));
-  fragColor = vec4(texture(uTex, uv).rgb, 1.0);
+  float v = foldV((uRect.z - py) / (uRect.z - uRect.w), uCloud);
+
+  // Sideways: exact inside the game's screen. Outside, the picture repeats at about the same scale
+  // per degree, with the number of repeats chosen so that the ends meet behind the player.
+  float span = aHi - aLo;
+  float aOut = 6.28318531 - span;
+  float n = max(2.0, floor(aOut / span + 0.5) + 1.0);
+  float s = (n - 1.0) / aOut;
+  float u;
+  if (az < aLo)      u = -(aLo - az) * s;
+  else if (az > aHi) u = 1.0 + (az - aHi) * s;
+  else               u = (tan(az) - uRect.x) / (uRect.y - uRect.x);
+
+  // Next to the screen the picture is mirrored (no visible join); further out it is repeated
+  // unflipped, with each repeat's edges blended into the next, so there are no mirror images.
+  float dOut = (u < 0.0) ? -u : ((u > 1.0) ? u - 1.0 : 0.0);
+  float t = smoothstep(0.0, 0.35, dOut);
+  vec3 mirrored = texture(uTex, vec2(u, v)).rgb;
+  float f = fract(u);
+  float wA = sin(3.14159265 * f);
+  wA *= wA;
+  vec3 a = texture(uTex, vec2(f, v)).rgb;
+  vec3 b = texture(uTex, vec2(fract(u + 0.5), v)).rgb;
+  vec3 tiled = a * wA + b * (1.0 - wA);
+  fragColor = vec4(mix(mirrored, tiled, t), 1.0);
 })";
 
 const char* kQuadFS = R"(#version 330 core
@@ -1063,6 +1092,7 @@ bool DesktopXR::CreateShaders()
     m_uSkyMvp  = glGetUniformLocation(m_skyProgram, "uMvp");
     m_uSkyTex  = glGetUniformLocation(m_skyProgram, "uTex");
     m_uSkyRect = glGetUniformLocation(m_skyProgram, "uRect");
+    m_uSkyCloud = glGetUniformLocation(m_skyProgram, "uCloud");
   }
   if (!m_quadProgram || !m_dotProgram)
     return Fail("VR shaders failed to build");
@@ -2716,6 +2746,7 @@ void DesktopXR::DrawBackdrop(const New3D::VREye& eye)
     glUniformMatrix4fv(m_uSkyMvp, 1, GL_FALSE, mvp);
     glUniform1i(m_uSkyTex, 0);
     glUniform4f(m_uSkyRect, m_gameL, m_gameR, m_gameT, m_gameB);
+    glUniform1f(m_uSkyCloud, m_config.skyCloudEnd);
     glBindVertexArray(m_vao);
     glDrawArrays(GL_TRIANGLES, 0, 64 * 32 * 6);
     glBindVertexArray(0);
