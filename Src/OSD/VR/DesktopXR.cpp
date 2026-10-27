@@ -197,14 +197,37 @@ float carryOn(float a, float lo, float hi) {
   if (a < aLo) return lo + (a - aLo) * (1.0 + lo * lo);
   return tan(a);
 }
-// Picture row above or below the game's screen: fold back and forth inside the cloud part only,
-// so the tree-line at the bottom of the picture never shows up in the sky.
+// Picture row above or below the game's screen, folded back and forth inside the cloud part only
+// (used right next to the screen, where it joins up with the picture).
 float foldV(float v, float c) {
   if (v >= 0.0 && v <= 1.0) return v;
   float x = (v < 0.0) ? -v : v - 1.0;
   float p = 2.0 * c;
   float m = mod(x, p);
   return (m < c) ? m : p - m;
+}
+// Smooth 3D noise and layered noise (clouds), a function of the direction you look in.
+float vhash(vec3 p) {
+  p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+float vnoise(vec3 x) {
+  vec3 i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(vhash(i), vhash(i + vec3(1.0, 0.0, 0.0)), f.x),
+                 mix(vhash(i + vec3(0.0, 1.0, 0.0)), vhash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+             mix(mix(vhash(i + vec3(0.0, 0.0, 1.0)), vhash(i + vec3(1.0, 0.0, 1.0)), f.x),
+                 mix(vhash(i + vec3(0.0, 1.0, 1.0)), vhash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+}
+float fbm(vec3 p) {
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < 6; i++) {
+    s += a * vnoise(p);
+    p = p * 2.03 + vec3(1.7, 9.2, 3.1);
+    a *= 0.5;
+  }
+  return s;
 }
 void main() {
   vec3 d = normalize(vDir);
@@ -214,31 +237,41 @@ void main() {
   float azC = clamp(az, aLo, aHi);
   float ty = tan(el) / cos(azC);                // what the game's screen sees on this row
   float py = carryOn(atan(ty), uRect.w, uRect.z);
-  float v = foldV((uRect.z - py) / (uRect.z - uRect.w), uCloud);
+  float vr = (uRect.z - py) / (uRect.z - uRect.w);   // 0..1 across the game's screen, beyond it outside
 
-  // Sideways: exact inside the game's screen. Outside, the picture repeats at about the same scale
-  // per degree, with the number of repeats chosen so that the ends meet behind the player.
+  // Sideways: exact inside the game's screen; outside, the same scale per degree, stretched a hair so
+  // that the ends meet behind the player (no join).
   float span = aHi - aLo;
   float aOut = 6.28318531 - span;
-  float n = max(2.0, floor(aOut / span + 0.5) + 1.0);
+  float n = max(2.0, floor(aOut / span + 0.5) + 1.0);   // screen widths once round
   float s = (n - 1.0) / aOut;
   float u;
   if (az < aLo)      u = -(aLo - az) * s;
   else if (az > aHi) u = 1.0 + (az - aHi) * s;
   else               u = (tan(az) - uRect.x) / (uRect.y - uRect.x);
 
-  // Next to the screen the picture is mirrored (no visible join); further out it is repeated
-  // unflipped, with each repeat's edges blended into the next, so there are no mirror images.
-  float dOut = (u < 0.0) ? -u : ((u > 1.0) ? u - 1.0 : 0.0);
-  float t = smoothstep(0.0, 0.35, dOut);
-  vec3 mirrored = texture(uTex, vec2(u, v)).rgb;
-  float f = fract(u);
-  float wA = sin(3.14159265 * f);
-  wA *= wA;
-  vec3 a = texture(uTex, vec2(f, v)).rgb;
-  vec3 b = texture(uTex, vec2(fract(u + 0.5), v)).rgb;
-  vec3 tiled = a * wA + b * (1.0 - wA);
-  fragColor = vec4(mix(mirrored, tiled, t), 1.0);
+  // Right next to the screen: the picture mirrored, which joins it up without a visible edge.
+  vec3 near = texture(uTex, vec2(u, foldV(vr, uCloud))).rgb;
+
+  // Everywhere else: generated clouds, in the colours of the game's own sky (darkest, average and
+  // lightest of a few samples of its cloud area), so there are no repeated or mirrored pictures.
+  vec3 dark = vec3(0.0), light = vec3(0.0), sum = vec3(0.0);
+  float lmin = 1e9, lmax = -1e9;
+  for (int i = 0; i < 9; i++) {
+    vec3 c = texture(uTex, vec2(0.15 + 0.35 * float(i % 3), uCloud * (0.15 + 0.35 * float(i / 3)))).rgb;
+    float l = dot(c, vec3(0.3, 0.6, 0.1));
+    if (l < lmin) { lmin = l; dark = c; }
+    if (l > lmax) { lmax = l; light = c; }
+    sum += c;
+  }
+  vec3 mid = sum / 9.0;
+  float q = smoothstep(0.36, 0.64, fbm(d * 5.0 + vec3(3.0, 1.0, 7.0)));
+  vec3 sky = mix(dark, mid, smoothstep(0.0, 0.5, q));
+  sky = mix(sky, light, smoothstep(0.45, 1.0, q));
+
+  float dOut = max(max(-u, u - 1.0), max(-vr, vr - 1.0));
+  float t = smoothstep(0.0, 0.2, max(dOut, 0.0));
+  fragColor = vec4(mix(near, sky, t), 1.0);
 })";
 
 const char* kQuadFS = R"(#version 330 core
