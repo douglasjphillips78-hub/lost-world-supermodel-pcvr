@@ -770,10 +770,41 @@ bool CInputs::Poll(const Game *game, unsigned dispX, unsigned dispY, unsigned di
 	uint32_t gameFlags = game ? game->inputs : Game::INPUT_ALL;
 	for (auto it = m_inputs.begin(); it != m_inputs.end(); ++it)
 	{
-		if ((*it)->IsUIInput() || ((*it)->gameFlags & gameFlags))
+		if ((*it)->IsUIInput() || (!m_gameFrozen && ((*it)->gameFlags & gameFlags)))
 			(*it)->Poll();
 	}
 	return true;
+}
+
+void CInputs::PollGameInputs(const Game *game)
+{
+	uint32_t gameFlags = game ? game->inputs : Game::INPUT_ALL;
+	for (auto it = m_inputs.begin(); it != m_inputs.end(); ++it)
+		if (!(*it)->IsUIInput() && ((*it)->gameFlags & gameFlags))
+			(*it)->Poll();
+}
+
+void CInputs::CaptureGameState(GameState &st) const
+{
+	memset(&st, 0, sizeof(st));
+	for (int i = 0; i < 2; i++)
+	{
+		st.coin[i] = coin[i]->value;       st.start[i] = start[i]->value;
+		st.test[i] = test[i]->value;       st.service[i] = service[i]->value;
+		st.trigger[i] = trigger[i]->value; st.triggerOff[i] = trigger[i]->offscreenValue;
+		st.gunX[i] = gunX[i]->value;       st.gunY[i] = gunY[i]->value;
+	}
+}
+
+void CInputs::ApplyGameState(const GameState &st)
+{
+	for (int i = 0; i < 2; i++)
+	{
+		coin[i]->value = st.coin[i];       start[i]->value = st.start[i];
+		test[i]->value = st.test[i];       service[i]->value = st.service[i];
+		trigger[i]->value = st.trigger[i]; trigger[i]->offscreenValue = st.triggerOff[i];
+		gunX[i]->value = st.gunX[i];       gunY[i]->value = st.gunY[i];
+	}
 }
 
 void CInputs::DumpState(const Game *game)

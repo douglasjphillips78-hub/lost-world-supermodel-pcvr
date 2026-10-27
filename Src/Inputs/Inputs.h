@@ -28,6 +28,7 @@
 #ifndef INCLUDED_INPUTS_H
 #define INCLUDED_INPUTS_H
 
+#include <cstring>
 #include "InputTypes.h"
 #include "Types.h"
 #include "Util/NewConfig.h"
@@ -83,6 +84,25 @@ private:
   void PrintHeader(const char *fmt, ...);
 
   void PrintConfigureInputsHelp();
+
+public:
+  // Lockstep (two-headset play, determinism tests): the inputs the emulated game reads, as one small
+  // value that can be recorded, sent over the network and applied on every machine identically.
+  struct GameState
+  {
+    uint16_t coin[2], start[2], test[2], service[2];
+    uint16_t trigger[2], triggerOff[2], gunX[2], gunY[2];
+    bool operator==(const GameState &o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
+  };
+  void CaptureGameState(GameState &st) const;
+  void ApplyGameState(const GameState &st);
+  // While frozen, Poll() only updates the UI inputs; the game inputs change only through
+  // PollGameInputs() / ApplyGameState(), called when no emulated frame is running.
+  void SetGameInputsFrozen(bool frozen) { m_gameFrozen = frozen; }
+  void PollGameInputs(const Game *game);
+
+private:
+  bool m_gameFrozen = false;
 
 public:
   // UI controls

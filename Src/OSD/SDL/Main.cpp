@@ -73,6 +73,7 @@
 #include <vector>
 #include <algorithm>
 #include <atomic>
+#include <map>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -1074,6 +1075,187 @@ static bool VRLayerIsWhite(GLuint tex)
   return sum / (double)(496 * 384) > 200.0;
 }
 
+/******************************************************************************
+ Lockstep support (two headsets playing one game) and its determinism test
+
+ Two machines can only play the same game by sending each other the player inputs if the
+ emulator, started from the same state and given the same inputs on the same game frames,
+ ends up in the same state. LockstepTest = 1 records the inputs of a session (after taking a
+ starting snapshot at game frame LockstepStartFrame), LockstepTest = 2 replays them from that
+ snapshot, and both log a hash of the game's state every 30 frames:
+   "[LOCKSTEP] f=<frame> h=<hash>"
+ so the logs of the two runs can be compared. A replay also says "[LOCKSTEP] MISMATCH" at the
+ first frame where it differs from the recording.
+ While active the game inputs are frozen: they only change right before a game frame is
+ started (never while one is running), so every frame sees exactly the recorded values.
+******************************************************************************/
+
+struct LockCtx
+{
+  int mode = 0;                  // 0 off, 1 record, 2 replay
+  bool started = false;
+  CInputs *inputs = nullptr;
+  const Game *game = nullptr;
+  uint64_t frame = 0;            // game frames posted since the start
+  uint64_t startAt = 1000;       // record: emulator frame at which the snapshot is taken
+  std::string statePath, logPath;
+  FILE *out = nullptr;
+  uint32_t calAddr = 0;          // gun calibration to keep written (as the normal loop does)
+  int calCount = 0;
+  uint8_t cal[6] = {};
+  std::map<uint64_t, CInputs::GameState> in;
+  std::map<uint64_t, uint64_t> hashes;
+  uint64_t checked = 0, bad = 0, firstBad = 0;
+};
+static LockCtx s_lock;
+
+static void LockOpenReplay()
+{
+  FILE *f = fopen(s_lock.logPath.c_str(), "r");
+  if (!f)
+    return;
+  char line[512];
+  while (fgets(line, sizeof(line), f))
+  {
+    unsigned long long fr = 0, h = 0;
+    char hex[256] = {};
+    if (line[0] == 'I' && sscanf(line + 1, "%llu %255s", &fr, hex) == 2)
+    {
+      CInputs::GameState st;
+      memset(&st, 0, sizeof(st));
+      uint8_t *b = reinterpret_cast<uint8_t *>(&st);
+      for (size_t i = 0; i < sizeof(st) && hex[2 * i] && hex[2 * i + 1]; i++)
+      {
+        unsigned v = 0;
+        sscanf(hex + 2 * i, "%2x", &v);
+        b[i] = (uint8_t)v;
+      }
+      s_lock.in[fr] = st;
+    }
+    else if (line[0] == 'H' && sscanf(line + 1, "%llu %llx", &fr, &h) == 2)
+      s_lock.hashes[fr] = h;
+  }
+  fclose(f);
+}
+
+// Called right before a game frame is started (none is running).
+static void LockPre(CModel3 *m)
+{
+  if (!s_lock.mode || !s_lock.inputs)
+    return;
+  if (!s_lock.started)
+  {
+    if (s_lock.mode == 1 && m->GetTimings().frameId < s_lock.startAt)
+      return;                                   // let the game start up first
+    if (s_lock.mode == 2)
+    {
+      LockOpenReplay();
+      if (s_lock.in.empty())
+      {
+        InfoLog("[LOCKSTEP] replay: no recording found in '%s' - lockstep test off", s_lock.logPath.c_str());
+        s_lock.mode = 0;
+        return;
+      }
+    }
+    m->PauseThreads();
+    SetAudioEnabled(false);
+    if (s_lock.mode == 1)
+      SaveState(m, s_lock.statePath);
+    const bool ok = LoadState(m, s_lock.statePath);
+    m->ResumeThreads();
+    SetAudioEnabled(true);
+    if (!ok)
+    {
+      InfoLog("[LOCKSTEP] could not load the starting snapshot '%s' - lockstep test off", s_lock.statePath.c_str());
+      s_lock.mode = 0;
+      return;
+    }
+    if (s_lock.mode == 1)
+    {
+      s_lock.out = fopen(s_lock.logPath.c_str(), "w");
+      if (!s_lock.out)
+      {
+        InfoLog("[LOCKSTEP] cannot write '%s' - lockstep test off", s_lock.logPath.c_str());
+        s_lock.mode = 0;
+        return;
+      }
+    }
+    s_lock.started = true;
+    s_lock.frame = 0;
+    s_lock.inputs->SetGameInputsFrozen(true);
+    InfoLog("[LOCKSTEP] %s started from '%s'", s_lock.mode == 1 ? "recording" : "replaying", s_lock.statePath.c_str());
+  }
+
+  s_lock.inputs->PollGameInputs(s_lock.game);
+  CInputs::GameState st;
+  if (s_lock.mode == 1)
+  {
+    s_lock.inputs->CaptureGameState(st);
+    if (s_lock.out)
+    {
+      fprintf(s_lock.out, "I %llu ", (unsigned long long)s_lock.frame);
+      const uint8_t *b = reinterpret_cast<const uint8_t *>(&st);
+      for (size_t i = 0; i < sizeof(st); i++)
+        fprintf(s_lock.out, "%02x", b[i]);
+      fputc('\n', s_lock.out);
+      fflush(s_lock.out);
+    }
+  }
+  else
+  {
+    auto it = s_lock.in.find(s_lock.frame);
+    if (it != s_lock.in.end())
+      s_lock.inputs->ApplyGameState(it->second);
+    else if (!s_lock.in.empty() && s_lock.frame == s_lock.in.rbegin()->first + 1)
+      InfoLog("[LOCKSTEP] replay: end of recording reached after %llu frames: %llu hashes checked, %llu different%s",
+              (unsigned long long)s_lock.frame, (unsigned long long)s_lock.checked, (unsigned long long)s_lock.bad,
+              s_lock.bad ? "" : " - the emulator is deterministic");
+  }
+  // keep the gun calibration written, from this thread and between frames (the normal loop would race)
+  if (s_lock.calCount)
+    for (int i = 0; i < s_lock.calCount; i++)
+      if (m->Read8(s_lock.calAddr + i) != s_lock.cal[i])
+        m->Write8(s_lock.calAddr + i, s_lock.cal[i]);
+  s_lock.frame++;
+}
+
+// Called right after a game frame finished (none is running).
+static void LockPost(CModel3 *m)
+{
+  if (!s_lock.started || s_lock.frame == 0 || (s_lock.frame % 30) != 0)
+    return;
+  const uint64_t h = m->StateHash();
+  InfoLog("[LOCKSTEP] f=%llu h=%016llx", (unsigned long long)s_lock.frame, (unsigned long long)h);
+  if (s_lock.mode == 1)
+  {
+    if (s_lock.out)
+    {
+      fprintf(s_lock.out, "H %llu %016llx\n", (unsigned long long)s_lock.frame, (unsigned long long)h);
+      fflush(s_lock.out);
+    }
+  }
+  else
+  {
+    auto it = s_lock.hashes.find(s_lock.frame);
+    if (it != s_lock.hashes.end())
+    {
+      s_lock.checked++;
+      if (it->second != h)
+      {
+        if (!s_lock.bad)
+          s_lock.firstBad = s_lock.frame;
+        s_lock.bad++;
+        if (s_lock.bad <= 3)
+          InfoLog("[LOCKSTEP] MISMATCH at frame %llu: recorded %016llx, now %016llx (first difference at frame %llu)",
+                  (unsigned long long)s_lock.frame, (unsigned long long)it->second, (unsigned long long)h,
+                  (unsigned long long)s_lock.firstBad);
+      }
+      else if ((s_lock.checked % 20) == 0)
+        InfoLog("[LOCKSTEP] replay so far: %llu hashes checked, %llu different", (unsigned long long)s_lock.checked, (unsigned long long)s_lock.bad);
+    }
+  }
+}
+
 // Collect a finished emulator frame (non-blocking) and start the next one if it is due.
 static void VRPump(CModel3 *model3, bool &inFlight, int &owed, bool &haveNew, int &statEmu)
 {
@@ -1082,6 +1264,7 @@ static void VRPump(CModel3 *model3, bool &inFlight, int &owed, bool &haveNew, in
     model3->EndFrameAsync();
     inFlight = false;
     haveNew = true;
+    LockPost(model3);
     const uint64_t now = SDL_GetPerformanceCounter(), done = s_vrDoneTicks.load();
     if (done > s_vrPostTicks && s_vrPostTicks)
     {
@@ -1097,6 +1280,7 @@ static void VRPump(CModel3 *model3, bool &inFlight, int &owed, bool &haveNew, in
   }
   if (!inFlight && owed > 0)
   {
+    LockPre(model3);
     s_vrPostTicks = SDL_GetPerformanceCounter();
     model3->PostFrameAsync();
     s_vrEmuFramesPosted++;
@@ -1697,6 +1881,26 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
   // Reset emulator
   Model3->Reset();
 
+  // Lockstep determinism test (see LockCtx): LockstepTest = 1 records, 2 replays
+  s_lock = LockCtx();
+  if (xr)
+  {
+    s_lock.mode = std::clamp(s_runtime_config["LockstepTest"].ValueAsDefault<int>(0), 0, 2);
+    s_lock.startAt = (uint64_t)(std::max)(1, s_runtime_config["LockstepStartFrame"].ValueAsDefault<int>(1000));
+    s_lock.inputs = Inputs;
+    s_lock.game = &game;
+    s_lock.statePath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Saves) << game.name << ".lockstart";
+    s_lock.logPath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Saves) << game.name << ".lockrec";
+    if (vrGunCal)
+    {
+      s_lock.calAddr = vrGunCal->address;
+      s_lock.calCount = vrGunCal->count;
+      memcpy(s_lock.cal, vrGunCal->bytes, sizeof(s_lock.cal));
+    }
+    if (s_lock.mode)
+      InfoLog("[LOCKSTEP] test mode %d (%s), snapshot '%s', inputs '%s'", s_lock.mode, s_lock.mode == 1 ? "record" : "replay", s_lock.statePath.c_str(), s_lock.logPath.c_str());
+  }
+
   // Load initial save state if requested
   if (!initialState.empty())
     LoadState(Model3, initialState);
@@ -1709,7 +1913,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
   // CONTINUE screen by an older build) is deleted on load and a new one taken.
   // Delete Saves/<game>.vrlogo to take a new one.
   vrBootPath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Saves) << game.name << ".vrlogo";
-  if (xr && initialState.empty() && s_runtime_config["VRQuickBoot"].ValueAsDefault<bool>(true))
+  if (xr && initialState.empty() && !s_lock.mode && s_runtime_config["VRQuickBoot"].ValueAsDefault<bool>(true))
   {
     if (FILE *f = fopen(vrBootPath.c_str(), "rb"))
     {
@@ -1944,7 +2148,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
     }
 
     // VR gun calibration: write the game's aim range into its settings in RAM (see VRGunCalibration)
-    if (vrGunCal && vrCalModel3 && vrCalModel3->GetTimings().frameId >= vrGunCal->fromFrame)
+    if (vrGunCal && vrCalModel3 && !s_lock.started && vrCalModel3->GetTimings().frameId >= vrGunCal->fromFrame)
     {
       for (int i = 0; i < vrGunCal->count; i++)
         if (vrCalModel3->Read8(vrGunCal->address + i) != vrGunCal->bytes[i])

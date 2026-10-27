@@ -1946,6 +1946,23 @@ void CModel3::ClearNVRAM(void)
 
 void (*g_vrFrameDoneHook)(void) = nullptr;
 
+UINT64 CModel3::StateHash(void)
+{
+  UINT64 h = 0xCBF29CE484222325ULL;
+  auto mix = [&h](UINT64 v) { h ^= v; h *= 0x100000001B3ULL; h ^= h >> 29; };
+  const UINT64 *p = reinterpret_cast<const UINT64 *>(ram);
+  for (size_t i = 0; i < 0x800000 / 8; i++)
+    mix(p[i]);
+  p = reinterpret_cast<const UINT64 *>(backupRAM);
+  for (size_t i = 0; i < 0x20000 / 8; i++)
+    mix(p[i]);
+  mix(ppc_get_pc());
+  mix(ppc_get_lr());
+  for (unsigned r = 0; r < 32; r++)
+    mix(ppc_get_gpr(r));
+  return h;
+}
+
 bool CModel3::PostFrameAsync(void)
 {
   m_asyncStart = CThread::GetTicks();
