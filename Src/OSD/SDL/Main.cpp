@@ -1234,6 +1234,39 @@ static void LockPre(CModel3 *m)
 // 'completed' = game frames run since the start.
 static void LockHash(CModel3 *m, uint64_t completed)
 {
+  // Diagnostics: the RAM after the first frames is kept by the recording and compared word by word
+  // by the replay, which logs where the two differ.
+  if (completed >= 1 && completed <= 2)
+  {
+    const std::string path = s_lock.logPath + ".ram" + std::to_string((unsigned long long)completed);
+    const UINT8 *ram = m->DebugRAM();
+    if (s_lock.mode == 1)
+    {
+      if (FILE *f = fopen(path.c_str(), "wb")) { fwrite(ram, 1, 0x800000, f); fclose(f); }
+    }
+    else if (FILE *f = fopen(path.c_str(), "rb"))
+    {
+      std::vector<uint8_t> old(0x800000);
+      if (fread(old.data(), 1, old.size(), f) == old.size())
+      {
+        int shown = 0;
+        unsigned long long total = 0;
+        for (size_t i = 0; i < 0x800000; i += 4)
+          if (memcmp(&old[i], ram + i, 4) != 0)
+          {
+            total++;
+            if (shown < 40)
+            {
+              shown++;
+              InfoLog("[LOCKSTEP] f=%llu RAM %06X: recorded %02X%02X%02X%02X now %02X%02X%02X%02X", (unsigned long long)completed, (unsigned)i,
+                      old[i], old[i + 1], old[i + 2], old[i + 3], ram[i], ram[i + 1], ram[i + 2], ram[i + 3]);
+            }
+          }
+        InfoLog("[LOCKSTEP] f=%llu: %llu RAM words differ", (unsigned long long)completed, total);
+      }
+      fclose(f);
+    }
+  }
   UINT64 r, bk, g;
   m->StateHashParts(r, bk, g);
   const uint64_t t = ((r * 31 + bk) * 31) + g;
