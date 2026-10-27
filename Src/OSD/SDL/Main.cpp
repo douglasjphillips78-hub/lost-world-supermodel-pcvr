@@ -1167,6 +1167,10 @@ static void LockPre(CModel3 *m)
     SetAudioEnabled(false);
     if (s_lock.mode == 1)
       SaveState(m, s_lock.statePath);
+    // Both machines (and both runs of this test) must start from exactly the same thing: power-on
+    // state plus the snapshot. A machine that has been running keeps small bits of state the
+    // snapshot does not hold, so it would not behave like one that has just been started.
+    m->Reset();
     const bool ok = LoadState(m, s_lock.statePath);
     m->ResumeThreads();
     SetAudioEnabled(true);
