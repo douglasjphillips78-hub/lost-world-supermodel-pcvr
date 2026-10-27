@@ -53,6 +53,8 @@
  */
 // VR: called by the PPC board thread each time it finishes a frame (any thread may set it).
 extern void (*g_vrFrameDoneHook)(void);
+// Lockstep diagnostics: while true, writes to a few RAM words are logged with the writer's PC
+extern bool g_lockWatch;
 
 struct FrameTimings
 {

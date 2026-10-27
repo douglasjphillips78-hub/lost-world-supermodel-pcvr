@@ -1194,6 +1194,7 @@ static void LockPre(CModel3 *m)
     s_lock.started = true;
     s_lock.frame = 0;
     s_lock.inputs->SetGameInputsFrozen(true);
+    g_lockWatch = true;
     InfoLog("[LOCKSTEP] %s started from '%s'", s_lock.mode == 1 ? "recording" : "replaying", s_lock.statePath.c_str());
     LockHash(m, 0);   // the machine straight after loading the snapshot
   }

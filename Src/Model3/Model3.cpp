@@ -218,6 +218,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
 #include "Supermodel.h"
 #include "DriveBoard/BillBoard.h"
 #include "DriveBoard/JoystickBoard.h"
@@ -1371,11 +1372,22 @@ UINT64 CModel3::Read64(UINT32 addr)
  *
  * Write handlers.
  */
+bool g_lockWatch = false;
+
+static void LockWatchLog(const char *what, UINT32 addr, UINT32 data)
+{
+  static std::atomic<int> count{0};
+  if (count.fetch_add(1) < 60)
+    InfoLog("[LOCKSTEP] write %s %06X <- %08X  pc=%08X lr=%08X", what, (unsigned)addr, (unsigned)data, (unsigned)ppc_get_pc(), (unsigned)ppc_get_lr());
+}
+
 void CModel3::Write8(UINT32 addr, UINT8 data)
 {
   // RAM (most frequently accessed)
   if (addr < 0x00800000)
   {
+    if (g_lockWatch && addr - 0xE90 < 0x20)
+      LockWatchLog("8", addr, data);
     ram[addr^3] = data;
     return;
   }
@@ -1517,6 +1529,8 @@ void CModel3::Write16(UINT32 addr, UINT16 data)
   // RAM (most frequently accessed)
   if (addr < 0x00800000)
   {
+    if (g_lockWatch && addr - 0xE90 < 0x20)
+      LockWatchLog("16", addr, data);
     *(UINT16 *) &ram[addr^2] = data;
     return;
   }
@@ -1611,6 +1625,8 @@ void CModel3::Write32(UINT32 addr, UINT32 data)
   // RAM (most frequently accessed)
   if (addr<0x00800000)
   {
+    if (g_lockWatch && addr - 0xE90 < 0x20)
+      LockWatchLog("32", addr, data);
     *(UINT32 *) &ram[addr] = data;
     return;
   }
