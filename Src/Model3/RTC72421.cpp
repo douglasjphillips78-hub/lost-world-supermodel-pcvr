@@ -34,6 +34,7 @@
 #include "RTC72421.h"
 
 #include <ctime>
+#include <atomic>
 #include "Supermodel.h"
 
 
@@ -41,17 +42,30 @@
  Emulation Functions
 ******************************************************************************/
 
+static std::atomic<bool> s_fixedClock{false};
+static std::atomic<long long> s_fixedTime{0};
+
+void CRTC72421::SetFixedTime(bool on, long long unixTime)
+{
+	s_fixedTime = unixTime;
+	s_fixedClock = on;
+}
+
 UINT8 CRTC72421::ReadRegister(unsigned reg)
 {
-	static time_t oldTime{0};
+	struct tm tmv;
+	const struct tm *Time = &tmv;
 	time_t currentTime;
-	static struct tm *Time;
 
-	time(&currentTime);
-	if (currentTime != oldTime)
+	if (s_fixedClock)
 	{
-		Time = localtime(&currentTime);
-		oldTime = currentTime;
+		currentTime = (time_t)s_fixedTime.load();
+		gmtime_r(&currentTime, &tmv);
+	}
+	else
+	{
+		time(&currentTime);
+		localtime_r(&currentTime, &tmv);
 	}
 
 	switch (reg&0xF)

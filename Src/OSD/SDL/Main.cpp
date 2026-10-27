@@ -74,6 +74,7 @@
 #include <algorithm>
 #include <atomic>
 #include <map>
+#include "Model3/RTC72421.h"
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -1197,6 +1198,8 @@ static void LockPre(CModel3 *m)
     LockHash(m, 0);   // the machine straight after loading the snapshot
   }
 
+  // The game's clock: the same on every machine, one second per 60 game frames (see CRTC72421)
+  CRTC72421::SetFixedTime(true, 1700000000LL + (long long)(s_lock.frame / 60));
   s_lock.inputs->PollGameInputs(s_lock.game);
   CInputs::GameState st;
   if (s_lock.mode == 1)

@@ -39,6 +39,14 @@ class CRTC72421
 {
 public:
 	/*
+	 * SetFixedTime(on, unixTime):
+	 *
+	 * Lockstep play and its determinism test need every machine to read the same clock, so the
+	 * time can be set from outside (by the frame count) instead of coming from the host's clock.
+	 */
+	static void SetFixedTime(bool on, long long unixTime);
+
+	/*
 	 * ReadRegister(unsigned reg):
 	 *
 	 * Reads data from one of the RTC registers.
