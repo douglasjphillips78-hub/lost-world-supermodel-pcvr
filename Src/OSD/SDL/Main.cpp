@@ -1104,10 +1104,12 @@ struct LockCtx
   int calCount = 0;
   uint8_t cal[6] = {};
   std::map<uint64_t, CInputs::GameState> in;
-  std::map<uint64_t, uint64_t> hashes;
+  struct Hashes { uint64_t total, ram, backup, regs; };
+  std::map<uint64_t, Hashes> hashes;
   uint64_t checked = 0, bad = 0, firstBad = 0;
 };
 static LockCtx s_lock;
+static void LockHash(CModel3 *m, uint64_t completed);
 
 static void LockOpenReplay()
 {
@@ -1132,8 +1134,12 @@ static void LockOpenReplay()
       }
       s_lock.in[fr] = st;
     }
-    else if (line[0] == 'H' && sscanf(line + 1, "%llu %llx", &fr, &h) == 2)
-      s_lock.hashes[fr] = h;
+    else if (line[0] == 'H')
+    {
+      unsigned long long t = 0, r = 0, b = 0, g = 0;
+      if (sscanf(line + 1, "%llu %llx %llx %llx %llx", &fr, &t, &r, &b, &g) == 5)
+        s_lock.hashes[fr] = { t, r, b, g };
+    }
   }
   fclose(f);
 }
@@ -1184,6 +1190,7 @@ static void LockPre(CModel3 *m)
     s_lock.frame = 0;
     s_lock.inputs->SetGameInputsFrozen(true);
     InfoLog("[LOCKSTEP] %s started from '%s'", s_lock.mode == 1 ? "recording" : "replaying", s_lock.statePath.c_str());
+    LockHash(m, 0);   // the machine straight after loading the snapshot
   }
 
   s_lock.inputs->PollGameInputs(s_lock.game);
@@ -1219,41 +1226,54 @@ static void LockPre(CModel3 *m)
   s_lock.frame++;
 }
 
+// Hash the machine (between frames), log it, and record it or compare it with the recording.
+// 'completed' = game frames run since the start.
+static void LockHash(CModel3 *m, uint64_t completed)
+{
+  UINT64 r, bk, g;
+  m->StateHashParts(r, bk, g);
+  const uint64_t t = ((r * 31 + bk) * 31) + g;
+  if (s_lock.mode == 1)
+  {
+    InfoLog("[LOCKSTEP] f=%llu h=%016llx", (unsigned long long)completed, (unsigned long long)t);
+    if (s_lock.out)
+    {
+      fprintf(s_lock.out, "H %llu %016llx %016llx %016llx %016llx\n", (unsigned long long)completed,
+              (unsigned long long)t, (unsigned long long)r, (unsigned long long)bk, (unsigned long long)g);
+      fflush(s_lock.out);
+    }
+    return;
+  }
+  auto it = s_lock.hashes.find(completed);
+  if (it == s_lock.hashes.end())
+    return;
+  s_lock.checked++;
+  const bool same = it->second.total == t;
+  if (!same)
+  {
+    if (!s_lock.bad)
+      s_lock.firstBad = completed;
+    s_lock.bad++;
+  }
+  // every difference is logged (with which part differs), matches only now and then
+  if (!same)
+    InfoLog("[LOCKSTEP] f=%llu DIFF ram:%s backup:%s cpu:%s", (unsigned long long)completed,
+            it->second.ram == r ? "same" : "DIFFERENT", it->second.backup == bk ? "same" : "DIFFERENT",
+            it->second.regs == g ? "same" : "DIFFERENT");
+  else if (completed <= 120 || (completed % 300) == 0)
+    InfoLog("[LOCKSTEP] f=%llu same", (unsigned long long)completed);
+  if ((s_lock.checked % 40) == 0)
+    InfoLog("[LOCKSTEP] replay so far: %llu checked, %llu different (first difference at frame %llu)",
+            (unsigned long long)s_lock.checked, (unsigned long long)s_lock.bad, (unsigned long long)s_lock.firstBad);
+}
+
 // Called right after a game frame finished (none is running).
 static void LockPost(CModel3 *m)
 {
-  if (!s_lock.started || s_lock.frame == 0 || (s_lock.frame % 30) != 0)
+  if (!s_lock.started || s_lock.frame == 0)
     return;
-  const uint64_t h = m->StateHash();
-  InfoLog("[LOCKSTEP] f=%llu h=%016llx", (unsigned long long)s_lock.frame, (unsigned long long)h);
-  if (s_lock.mode == 1)
-  {
-    if (s_lock.out)
-    {
-      fprintf(s_lock.out, "H %llu %016llx\n", (unsigned long long)s_lock.frame, (unsigned long long)h);
-      fflush(s_lock.out);
-    }
-  }
-  else
-  {
-    auto it = s_lock.hashes.find(s_lock.frame);
-    if (it != s_lock.hashes.end())
-    {
-      s_lock.checked++;
-      if (it->second != h)
-      {
-        if (!s_lock.bad)
-          s_lock.firstBad = s_lock.frame;
-        s_lock.bad++;
-        if (s_lock.bad <= 3)
-          InfoLog("[LOCKSTEP] MISMATCH at frame %llu: recorded %016llx, now %016llx (first difference at frame %llu)",
-                  (unsigned long long)s_lock.frame, (unsigned long long)it->second, (unsigned long long)h,
-                  (unsigned long long)s_lock.firstBad);
-      }
-      else if ((s_lock.checked % 20) == 0)
-        InfoLog("[LOCKSTEP] replay so far: %llu hashes checked, %llu different", (unsigned long long)s_lock.checked, (unsigned long long)s_lock.bad);
-    }
-  }
+  if (s_lock.frame <= 120 || (s_lock.frame % 30) == 0)   // every frame at first, to find where they part
+    LockHash(m, s_lock.frame);
 }
 
 // Collect a finished emulator frame (non-blocking) and start the next one if it is due.

@@ -103,6 +103,7 @@ public:
   void RenderFrame(void);
   // Determinism checks (lockstep): a 64-bit hash of the game's main state. Call between frames only.
   UINT64 StateHash(void);
+  void StateHashParts(UINT64 &ramHash, UINT64 &backupHash, UINT64 &regsHash);   // the same, per part
   void Reset(void);
   const Game &GetGame(void) const;
   void AttachRenderers(CRender2D *Render2DPtr, IRender3D *Render3DPtr, SuperAA *superAA);

@@ -1946,21 +1946,36 @@ void CModel3::ClearNVRAM(void)
 
 void (*g_vrFrameDoneHook)(void) = nullptr;
 
+void CModel3::StateHashParts(UINT64 &ramHash, UINT64 &backupHash, UINT64 &regsHash)
+{
+  auto run = [](const UINT8 *data, size_t bytes, UINT64 h)
+  {
+    const UINT64 *p = reinterpret_cast<const UINT64 *>(data);
+    for (size_t i = 0; i < bytes / 8; i++)
+    {
+      h ^= p[i];
+      h *= 0x100000001B3ULL;
+      h ^= h >> 29;
+    }
+    return h;
+  };
+  ramHash = run(ram, 0x800000, 0xCBF29CE484222325ULL);
+  backupHash = run(backupRAM, 0x20000, 0xCBF29CE484222325ULL);
+  UINT64 regs[36];
+  regs[0] = ppc_get_pc();
+  regs[1] = ppc_get_lr();
+  for (unsigned r = 0; r < 32; r++)
+    regs[2 + r] = ppc_get_gpr(r);
+  regs[34] = ppc_read_msr();
+  regs[35] = 0;
+  regsHash = run(reinterpret_cast<const UINT8 *>(regs), sizeof(regs), 0xCBF29CE484222325ULL);
+}
+
 UINT64 CModel3::StateHash(void)
 {
-  UINT64 h = 0xCBF29CE484222325ULL;
-  auto mix = [&h](UINT64 v) { h ^= v; h *= 0x100000001B3ULL; h ^= h >> 29; };
-  const UINT64 *p = reinterpret_cast<const UINT64 *>(ram);
-  for (size_t i = 0; i < 0x800000 / 8; i++)
-    mix(p[i]);
-  p = reinterpret_cast<const UINT64 *>(backupRAM);
-  for (size_t i = 0; i < 0x20000 / 8; i++)
-    mix(p[i]);
-  mix(ppc_get_pc());
-  mix(ppc_get_lr());
-  for (unsigned r = 0; r < 32; r++)
-    mix(ppc_get_gpr(r));
-  return h;
+  UINT64 a, b, c;
+  StateHashParts(a, b, c);
+  return (a * 31 + b) * 31 + c;
 }
 
 bool CModel3::PostFrameAsync(void)
