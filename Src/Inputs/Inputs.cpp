@@ -793,6 +793,8 @@ void CInputs::CaptureGameState(GameState &st) const
 		st.test[i] = test[i]->value;       st.service[i] = service[i]->value;
 		st.trigger[i] = trigger[i]->value; st.triggerOff[i] = trigger[i]->offscreenValue;
 		st.gunX[i] = gunX[i]->value;       st.gunY[i] = gunY[i]->value;
+		st.analogGunX[i] = analogGunX[i]->value;   st.analogGunY[i] = analogGunY[i]->value;
+		st.analogTrigL[i] = analogTriggerLeft[i]->value;   st.analogTrigR[i] = analogTriggerRight[i]->value;
 	}
 }
 
@@ -804,6 +806,8 @@ void CInputs::ApplyGameState(const GameState &st)
 		test[i]->value = st.test[i];       service[i]->value = st.service[i];
 		trigger[i]->value = st.trigger[i]; trigger[i]->offscreenValue = st.triggerOff[i];
 		gunX[i]->value = st.gunX[i];       gunY[i]->value = st.gunY[i];
+		analogGunX[i]->value = st.analogGunX[i];   analogGunY[i]->value = st.analogGunY[i];
+		analogTriggerLeft[i]->value = st.analogTrigL[i];   analogTriggerRight[i]->value = st.analogTrigR[i];
 	}
 }
 

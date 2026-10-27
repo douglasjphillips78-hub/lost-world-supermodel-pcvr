@@ -92,6 +92,7 @@ public:
   {
     uint16_t coin[2], start[2], test[2], service[2];
     uint16_t trigger[2], triggerOff[2], gunX[2], gunY[2];
+    uint16_t analogGunX[2], analogGunY[2], analogTrigL[2], analogTrigR[2];   // The Lost World's guns
     bool operator==(const GameState &o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
   };
   void CaptureGameState(GameState &st) const;
