@@ -75,6 +75,7 @@
 #include <atomic>
 #include <map>
 #include "Model3/RTC72421.h"
+#include "Lockstep.h"
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -1146,7 +1147,7 @@ static void LockOpenReplay()
 }
 
 // Called right before a game frame is started (none is running).
-static void LockPre(CModel3 *m)
+static void LockTestPre(CModel3 *m)
 {
   if (!s_lock.mode || !s_lock.inputs)
     return;
@@ -1308,9 +1309,226 @@ static void LockHash(CModel3 *m, uint64_t completed)
             (unsigned long long)s_lock.checked, (unsigned long long)s_lock.bad, (unsigned long long)s_lock.firstBad);
 }
 
+/******************************************************************************
+ Two headsets on one LAN (LockstepRole = 1 host, 2 join): see Lockstep.h.
+ The host's player is the game's player 1, the joiner is player 2. Each headset aims with its own
+ controller (as player 1 locally); the inputs are merged the same way on both machines.
+******************************************************************************/
+
+struct NetCtx
+{
+  LockNet net;
+  int role = 0;                  // 0 off
+  int phase = 0;                 // 1 waiting for the other headset / the snapshot, 2 host holds for the joiner, 3 playing
+  uint32_t holdSince = 0;
+  int64_t sentFrame = -1;        // last game frame whose input we have already sent
+  std::map<uint64_t, CInputs::GameState> own;   // our inputs for the frames to come
+  bool desyncLogged = false;
+};
+static NetCtx s_net;
+
+static CInputs::GameState NetNeutral()
+{
+  CInputs::GameState n;
+  memset(&n, 0, sizeof(n));
+  for (int i = 0; i < 2; i++)
+  {
+    n.analogGunX[i] = n.analogGunY[i] = 0x80;
+    n.gunX[i] = 400;
+    n.gunY[i] = 272;
+  }
+  return n;
+}
+
+// Both machines build the same game input from the host's and the joiner's controller input.
+static CInputs::GameState NetMerge(const CInputs::GameState &h, const CInputs::GameState &c)
+{
+  CInputs::GameState m = h;
+  m.coin[1] = c.coin[0];           m.start[1] = c.start[0];
+  m.trigger[1] = c.trigger[0];     m.triggerOff[1] = c.triggerOff[0];
+  m.gunX[1] = c.gunX[0];           m.gunY[1] = c.gunY[0];
+  m.analogGunX[1] = c.analogGunX[0];   m.analogGunY[1] = c.analogGunY[0];
+  m.analogTrigL[1] = c.analogTrigL[0]; m.analogTrigR[1] = c.analogTrigR[0];
+  return m;
+}
+
+static void NetAbort(const char *why)
+{
+  InfoLog("[LOCKSTEP] two-player stopped: %s", why);
+  if (s_lock.inputs)
+    s_lock.inputs->SetGameInputsFrozen(false);
+  CRTC72421::SetFixedTime(false, 0);
+  g_lockWatch = false;
+  s_lock.started = false;
+  s_net.net.Stop();
+  s_net.role = 0;
+  s_net.phase = 0;
+}
+
+static bool NetLoadSnapshot(CModel3 *m)
+{
+  m->PauseThreads();
+  SetAudioEnabled(false);
+  m->Reset();
+  const bool ok = LoadState(m, s_lock.statePath);
+  m->ResumeThreads();
+  SetAudioEnabled(true);
+  return ok;
+}
+
+static void NetBegin(CModel3 *m)
+{
+  s_lock.started = true;
+  s_lock.frame = 0;
+  s_net.sentFrame = -1;
+  s_net.own.clear();
+  s_net.phase = 3;
+  s_lock.inputs->SetGameInputsFrozen(true);
+  g_lockWatch = false;
+  InfoLog("[LOCKSTEP] two-player started (%s), input delay %d frames", s_net.role == LockNet::HOST ? "host" : "joiner", s_net.net.delay);
+}
+
+// Called right before a game frame is started. Returns false to hold the emulator for now.
+static bool NetPre(CModel3 *m)
+{
+  LockNet &net = s_net.net;
+  if (net.dead || net.helloBad)
+  {
+    NetAbort(net.helloBad ? net.Status().c_str() : "connection lost");
+    return true;
+  }
+  if (s_net.phase == 1)
+  {
+    if (s_net.role == LockNet::HOST)
+    {
+      if (!net.peerHello || m->GetTimings().frameId < 600)   // let the game get going first
+        return true;
+      m->PauseThreads();
+      SaveState(m, s_lock.statePath);
+      m->ResumeThreads();
+      std::vector<uint8_t> bytes;
+      if (FILE *f = fopen(s_lock.statePath.c_str(), "rb"))
+      {
+        uint8_t buf[65536];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+          bytes.insert(bytes.end(), buf, buf + n);
+        fclose(f);
+      }
+      if (bytes.empty())
+      {
+        NetAbort("could not save the snapshot");
+        return true;
+      }
+      InfoLog("[LOCKSTEP] sending the snapshot (%u bytes)", (unsigned)bytes.size());
+      net.SendStateAsync(std::move(bytes));
+      s_net.phase = 2;
+      s_net.holdSince = SDL_GetTicks();
+      return false;
+    }
+    // joiner: runs normally until the snapshot arrives
+    if (!net.stateReady)
+      return true;
+    if (FILE *f = fopen(s_lock.statePath.c_str(), "wb"))
+    {
+      fwrite(net.stateBuf.data(), 1, net.stateBuf.size(), f);
+      fclose(f);
+    }
+    if (!NetLoadSnapshot(m))
+    {
+      NetAbort("could not load the host's snapshot");
+      return true;
+    }
+    net.SendReady();
+    NetBegin(m);
+  }
+  else if (s_net.phase == 2)
+  {
+    if (!net.peerReady)
+    {
+      if (SDL_GetTicks() - s_net.holdSince > 60000)
+        NetAbort("the other headset did not load the snapshot in time");
+      return false;
+    }
+    if (!NetLoadSnapshot(m))
+    {
+      NetAbort("could not reload the snapshot");
+      return true;
+    }
+    NetBegin(m);
+  }
+
+  // phase 3: one game frame, once both headsets' inputs for it are known
+  const uint64_t f = s_lock.frame;
+  const uint64_t D = (uint64_t)net.delay;
+  if (s_net.sentFrame < (int64_t)f)
+  {
+    s_lock.inputs->PollGameInputs(s_lock.game);
+    CInputs::GameState mine;
+    s_lock.inputs->CaptureGameState(mine);
+    s_net.own[f + D] = mine;
+    net.SendInput((uint32_t)(f + D), mine);
+    s_net.sentFrame = (int64_t)f;
+  }
+  CInputs::GameState ownF, theirs;
+  if (f < D)
+    ownF = theirs = NetNeutral();
+  else
+  {
+    ownF = s_net.own[f];
+    if (!net.GetRemote((uint32_t)f, theirs))
+      return false;   // the other headset is a little behind
+  }
+  s_net.own.erase(s_net.own.begin(), s_net.own.find(f + 1));
+  const CInputs::GameState merged = s_net.role == LockNet::HOST ? NetMerge(ownF, theirs) : NetMerge(theirs, ownF);
+  s_lock.inputs->ApplyGameState(merged);
+  CRTC72421::SetFixedTime(true, 1700000000LL + (long long)(f / 60));
+  if (s_lock.calCount)
+  {
+    for (int i = 0; i < s_lock.calCount; i++)
+      if (m->Read8(s_lock.calAddr + i) != s_lock.cal[i])
+        m->Write8(s_lock.calAddr + i, s_lock.cal[i]);
+    // the second player's calibration sits 6 bytes further on (lostwsga: 0x1242)
+    for (int i = 0; i < s_lock.calCount; i++)
+      if (m->Read8(s_lock.calAddr + 6 + i) != s_lock.cal[i])
+        m->Write8(s_lock.calAddr + 6 + i, s_lock.cal[i]);
+  }
+  s_lock.frame++;
+  return true;
+}
+
+static void NetPost(CModel3 *m)
+{
+  if (s_net.phase != 3 || s_lock.frame == 0 || (s_lock.frame % 60) != 0)
+    return;
+  const uint64_t h = m->StateHash();
+  s_net.net.SendHash((uint32_t)s_lock.frame, h);
+  const bool ok = s_net.net.CheckHash((uint32_t)s_lock.frame, h);
+  if ((!ok || s_net.net.desync) && !s_net.desyncLogged)
+  {
+    s_net.desyncLogged = true;
+    InfoLog("[LOCKSTEP] DESYNC: the two headsets differ around game frame %llu", (unsigned long long)s_lock.frame);
+  }
+  if ((s_lock.frame % 1800) == 0)
+    InfoLog("[LOCKSTEP] frame %llu in sync=%d", (unsigned long long)s_lock.frame, s_net.desyncLogged ? 0 : 1);
+}
+
+static bool LockPre(CModel3 *m)
+{
+  if (s_net.role)
+    return NetPre(m);
+  LockTestPre(m);
+  return true;
+}
+
 // Called right after a game frame finished (none is running).
 static void LockPost(CModel3 *m)
 {
+  if (s_net.role)
+  {
+    NetPost(m);
+    return;
+  }
   if (!s_lock.started || s_lock.frame == 0)
     return;
   if (s_lock.frame <= 120 || (s_lock.frame % 30) == 0)   // every frame at first, to find where they part
@@ -1341,7 +1559,8 @@ static void VRPump(CModel3 *model3, bool &inFlight, int &owed, bool &haveNew, in
   }
   if (!inFlight && owed > 0)
   {
-    LockPre(model3);
+    if (!LockPre(model3))
+      return;
     s_vrPostTicks = SDL_GetPerformanceCounter();
     model3->PostFrameAsync();
     s_vrEmuFramesPosted++;
@@ -1958,6 +2177,26 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       s_lock.calCount = vrGunCal->count;
       memcpy(s_lock.cal, vrGunCal->bytes, sizeof(s_lock.cal));
     }
+    // Two headsets: LockstepRole 1 = host, 2 = join (LockstepHost = the host's IP address)
+    const int netRole = std::clamp(s_runtime_config["LockstepRole"].ValueAsDefault<int>(0), 0, 2);
+    if (netRole && !s_lock.mode)
+    {
+      s_net.net.role = netRole;
+      s_net.net.addr = s_runtime_config["LockstepHost"].ValueAsDefault<std::string>("192.168.1.2");
+      s_net.net.port = std::clamp(s_runtime_config["LockstepPort"].ValueAsDefault<int>(1990), 1024, 65535);
+      s_net.net.delay = std::clamp(s_runtime_config["LockstepDelay"].ValueAsDefault<int>(4), 1, 20);
+      s_net.net.config = s_runtime_config["PowerPCFrequency"].ValueAsDefault<unsigned>(0);
+      s_net.net.gameName = game.name;
+      std::string err;
+      if (s_net.net.Start(err))
+      {
+        s_net.role = netRole;
+        s_net.phase = 1;
+        InfoLog("[LOCKSTEP] two-player %s, port %d%s%s", netRole == 1 ? "host" : "join", s_net.net.port, netRole == 2 ? ", host " : "", netRole == 2 ? s_net.net.addr.c_str() : "");
+      }
+      else
+        InfoLog("[LOCKSTEP] two-player unavailable: %s", err.c_str());
+    }
     if (s_lock.mode)
       InfoLog("[LOCKSTEP] test mode %d (%s), snapshot '%s', inputs '%s'", s_lock.mode, s_lock.mode == 1 ? "record" : "replay", s_lock.statePath.c_str(), s_lock.logPath.c_str());
   }
@@ -1974,7 +2213,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
   // CONTINUE screen by an older build) is deleted on load and a new one taken.
   // Delete Saves/<game>.vrlogo to take a new one.
   vrBootPath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Saves) << game.name << ".vrlogo";
-  if (xr && initialState.empty() && !s_lock.mode && s_runtime_config["VRQuickBoot"].ValueAsDefault<bool>(true))
+  if (xr && initialState.empty() && !s_lock.mode && !s_net.role && s_runtime_config["VRQuickBoot"].ValueAsDefault<bool>(true))
   {
     if (FILE *f = fopen(vrBootPath.c_str(), "rb"))
     {
@@ -2073,7 +2312,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
         }
       }
       ApplyVRInput(*xr);
-      g_tileGenHide.on = vrHideP2Tiles && s_vrSettings.hideP2 && (vrHideP2Always || xr->InPlay());
+      g_tileGenHide.on = vrHideP2Tiles && !s_net.role && s_vrSettings.hideP2 && (vrHideP2Always || xr->InPlay());
       // gun model: in the gun hand
       xr->SetGunHands(!s_vrSettings.gunModel ? 0 : (1 << s_vrGunHand));
       xr->SetPointerHand(s_vrGunHand);   // one pointer ring: the gun hand's
