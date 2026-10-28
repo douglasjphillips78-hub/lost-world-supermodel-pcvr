@@ -57,6 +57,7 @@ public:
   bool relay = false;
   std::string relayHost, relayCode;
   int relayPort = 1992;
+  int connectTimeout = 0;              // seconds to keep trying to reach the host (0 = for ever)
   int delay = 4;                       // game frames of input delay (hides the network latency)
   uint32_t config = 0;                 // must match on both machines
   std::string gameName;
@@ -227,13 +228,19 @@ private:
     return true;
   }
 
-  bool Connect() { return ConnectTo(addr, port); }
+  bool Connect() { return ConnectTo(addr, port, connectTimeout); }
 
   // Connect to host:port (an address or a name), trying again every second until it works.
-  bool ConnectTo(const std::string &host, int tcpPort)
+  bool ConnectTo(const std::string &host, int tcpPort, int timeoutSec = 0)
   {
+    const auto t0 = std::chrono::steady_clock::now();
     while (!stop)
     {
+      if (timeoutSec && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(timeoutSec))
+      {
+        SetStatus("could not reach the host - check the code");
+        return false;
+      }
       struct addrinfo hints, *res = nullptr;
       memset(&hints, 0, sizeof(hints));
       hints.ai_family = AF_INET;

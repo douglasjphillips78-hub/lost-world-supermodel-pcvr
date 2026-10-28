@@ -475,7 +475,7 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
           {
             if (k == 10) { if (!s.netTyped.empty()) s.netTyped.pop_back(); }
             else if (k == 12) { if (s.netTyped.size() >= 4) r.netConnectCode = true; }
-            else if (s.netTyped.size() < 8) s.netTyped += (char)('0' + d);
+            else if (s.netTyped.size() < 10) s.netTyped += (char)('0' + d);
           }
           ImGui::PopID();
         }

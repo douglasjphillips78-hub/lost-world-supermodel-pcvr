@@ -76,6 +76,7 @@
 #include <map>
 #include "Model3/RTC72421.h"
 #include "Lockstep.h"
+#include "Upnp.h"
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -1379,7 +1380,7 @@ static bool NetLoadSnapshot(CModel3 *m)
 }
 
 // Start a session (menu, or the ini keys): role 1 host, 2 join the host at addr:port
-static bool NetStartRuntime(int role, const std::string &addr, int port, const std::string &relayCode = std::string())
+static bool NetStartRuntime(int role, const std::string &addr, int port, const std::string &relayCode = std::string(), bool online = false)
 {
   if (s_net.role || s_lock.mode || !s_lock.inputs || !s_lock.game)
     return false;
@@ -1408,7 +1409,9 @@ static bool NetStartRuntime(int role, const std::string &addr, int port, const s
     n.relayCode = relayCode;
   }
   // over the internet the round trip is longer, so more frames of input delay
-  n.delay = std::clamp(s_runtime_config[n.relay ? "LockstepOnlineDelay" : "LockstepDelay"].ValueAsDefault<int>(n.relay ? 6 : 4), 1, 20);
+  online = online || n.relay;
+  n.connectTimeout = (online && !n.relay && role == LockNet::JOIN) ? 25 : 0;
+  n.delay = std::clamp(s_runtime_config[online ? "LockstepOnlineDelay" : "LockstepDelay"].ValueAsDefault<int>(online ? 6 : 4), 1, 20);
   n.config = s_runtime_config["PowerPCFrequency"].ValueAsDefault<unsigned>(0);
   n.gameName = s_lock.game->name;
   std::string err;
@@ -1430,6 +1433,7 @@ static bool NetStartRuntime(int role, const std::string &addr, int port, const s
 
 // The menu's 2 PLAYER tab
 static LockDisco s_disco;
+static Upnp s_upnp;
 static int s_netUiMode = 0;          // 0 idle, 1 hosting, 2 searching, 3 joining
 static std::string s_netUiCode, s_netUiFail;
 
@@ -1437,6 +1441,7 @@ static void NetUiStopAll()
 {
   s_disco.StopBeacon();
   s_disco.StopListen();
+  s_upnp.Stop();                     // give the router's port back
   s_netUiMode = 0;
 }
 
@@ -1465,16 +1470,10 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
   }
   if (mr.netHostOnline && s_netUiMode == 0)
   {
-    char code[8];
-    snprintf(code, sizeof(code), "%06u", (unsigned)(SDL_GetPerformanceCounter() % 900000ull) + 100000u);
+    // first try to open the router's port by itself; the room code is then the public address
     s_netUiFail.clear();
-    if (NetStartRuntime(LockNet::HOST, "", 0, code))
-    {
-      s_netUiCode = code;
-      s_netUiMode = 4;
-    }
-    else
-      s_netUiFail = s_net.lastMsg.empty() ? "Could not start" : s_net.lastMsg;
+    s_upnp.Start(1990);
+    s_netUiMode = 7;
   }
   if (mr.netTypeCode && s_netUiMode == 0)
   {
@@ -1484,7 +1483,18 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
   }
   if (mr.netConnectCode && s_netUiMode == 5)
   {
-    if (NetStartRuntime(LockNet::JOIN, "", 0, s.netTyped))
+    bool ok;
+    if (s.netTyped.size() == 10)
+    {
+      // a direct code: the host's public address as one number
+      const unsigned long long v = strtoull(s.netTyped.c_str(), nullptr, 10);
+      char ip[32];
+      snprintf(ip, sizeof(ip), "%u.%u.%u.%u", (unsigned)(v >> 24) & 255, (unsigned)(v >> 16) & 255, (unsigned)(v >> 8) & 255, (unsigned)v & 255);
+      ok = v < 0x100000000ull && NetStartRuntime(LockNet::JOIN, ip, 1990, std::string(), true);
+    }
+    else
+      ok = NetStartRuntime(LockNet::JOIN, "", 0, s.netTyped);
+    if (ok)
       s_netUiMode = 6;
     else
     {
@@ -1524,6 +1534,38 @@ static void NetUiUpdate(VRSettings &s)
     s_netUiFail = s_net.lastMsg.empty() ? "The session ended" : s_net.lastMsg;
     NetUiStopAll();
   }
+  if (s_netUiMode == 7 && s_upnp.State_() != Upnp::WORKING)
+  {
+    const std::string relay = s_runtime_config["LockstepRelay"].ValueAsDefault<std::string>("");
+    char code[16];
+    bool started = false;
+    if (s_upnp.State_() == Upnp::OK)
+    {
+      unsigned a, b, c, d;
+      if (sscanf(s_upnp.ExternalIp().c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) == 4)
+      {
+        snprintf(code, sizeof(code), "%010u", (a << 24) | (b << 16) | (c << 8) | d);
+        started = NetStartRuntime(LockNet::HOST, "", 1990, std::string(), true);
+      }
+    }
+    if (!started && !relay.empty())
+    {
+      // no direct connection possible: go through the relay server instead
+      snprintf(code, sizeof(code), "%06u", (unsigned)(SDL_GetPerformanceCounter() % 900000ull) + 100000u);
+      s_upnp.Stop();
+      started = NetStartRuntime(LockNet::HOST, "", 0, code);
+    }
+    if (started)
+    {
+      s_netUiCode = code;
+      s_netUiMode = 4;
+    }
+    else
+    {
+      s_netUiFail = s_upnp.State_() == Upnp::OK ? s_net.lastMsg : s_upnp.Message() + " (no relay server set either)";
+      NetUiStopAll();
+    }
+  }
   if (s_netUiMode == 1 && s_net.net.connected)
     s_disco.StopBeacon();
   s.netCode = s_netUiCode;
@@ -1542,6 +1584,10 @@ static void NetUiUpdate(VRSettings &s)
   case 4:
     s.netPhase = s_net.phase == 3 ? 4 : (s_net.net.connected && s_net.net.peerHello ? 3 : 1);
     s.netStatus = s_net.phase == 3 ? "Playing together" : (s_net.net.connected && s_net.net.peerHello ? "Friend joined - starting..." : s_net.net.Status());
+    break;
+  case 7:
+    s.netPhase = 3;
+    s.netStatus = "Opening your router...";
     break;
   case 5:
     s.netPhase = 6;
