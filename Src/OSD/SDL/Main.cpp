@@ -1500,7 +1500,7 @@ static bool RelayAddress(std::string &host, int &port)
 
 // The room directory: a Cloudflare Worker (Server/cloudflare) reached over HTTPS, or the relay's own
 // directory over plain TCP. LockstepDirectory = the Worker's address; this is the built-in one.
-static const char *const kDefaultDirectoryUrl = "";
+static const char *const kDefaultDirectoryUrl = "https://lwvr-directory.papalostworld.workers.dev";
 
 static std::string DirectoryUrl()
 {
