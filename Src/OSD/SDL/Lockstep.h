@@ -25,11 +25,14 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <chrono>
 #include "Inputs/Inputs.h"
 
 #if !defined(_WIN32)
 #include <arpa/inet.h>
 #include <errno.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -59,6 +62,15 @@ public:
   bool Start(std::string &err)
   {
 #ifdef LOCKNET_AVAILABLE
+    if (th.joinable())
+      th.join();
+    CloseAll();
+    peerHello = helloBad = stateReady = peerReady = dead = connected = desync = false;
+    stateBuf.clear();
+    {
+      std::lock_guard<std::mutex> l(mu);
+      remote.clear(); myHash.clear(); theirHash.clear();
+    }
     stop = false;
     th = std::thread([this] { Run(); });
     err.clear();
@@ -397,6 +409,163 @@ private:
   }
 #else
   bool SendMsg(char, const void *, uint32_t) { return false; }
+#endif
+};
+
+// Finding each other on the LAN without typing an address: the host shouts "room <code>" on UDP
+// port 1991 once a second (to every network's broadcast address), the joiner listens and lists
+// what it hears. Nothing here carries game data.
+class LockDisco
+{
+public:
+  struct Room { std::string code, addr; int port; };
+  static constexpr int kPort = 1991;
+
+  ~LockDisco() { StopBeacon(); StopListen(); }
+
+  void StartBeacon(const std::string &code, const std::string &game, int tcpPort)
+  {
+#ifdef LOCKNET_AVAILABLE
+    StopBeacon();
+    beaconStop = false;
+    msg = "LWVR1|" + code + "|" + game + "|" + std::to_string(tcpPort);
+    beaconTh = std::thread([this] { BeaconRun(); });
+#endif
+  }
+  void StopBeacon()
+  {
+#ifdef LOCKNET_AVAILABLE
+    beaconStop = true;
+    if (beaconTh.joinable()) beaconTh.join();
+#endif
+  }
+  void StartListen(const std::string &game)
+  {
+#ifdef LOCKNET_AVAILABLE
+    StopListen();
+    listenGame = game;
+    listenStop = false;
+    { std::lock_guard<std::mutex> l(mu); rooms.clear(); }
+    listenTh = std::thread([this] { ListenRun(); });
+#endif
+  }
+  void StopListen()
+  {
+#ifdef LOCKNET_AVAILABLE
+    listenStop = true;
+    if (listenTh.joinable()) listenTh.join();
+#endif
+  }
+  // Rooms heard in the last few seconds
+  std::vector<Room> Rooms()
+  {
+    std::vector<Room> out;
+    std::lock_guard<std::mutex> l(mu);
+    const auto now = std::chrono::steady_clock::now();
+    for (auto it = rooms.begin(); it != rooms.end();)
+    {
+      if (now - it->second.seen > std::chrono::seconds(5))
+        it = rooms.erase(it);
+      else
+      {
+        out.push_back(it->second.room);
+        ++it;
+      }
+    }
+    return out;
+  }
+
+private:
+  struct Seen { Room room; std::chrono::steady_clock::time_point seen; };
+  std::atomic<bool> beaconStop{true}, listenStop{true};
+  std::thread beaconTh, listenTh;
+  std::mutex mu;
+  std::map<std::string, Seen> rooms;
+  std::string msg, listenGame;
+
+#ifdef LOCKNET_AVAILABLE
+  void BeaconRun()
+  {
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0)
+      return;
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
+    while (!beaconStop)
+    {
+      std::vector<in_addr_t> targets;
+      targets.push_back(htonl(INADDR_BROADCAST));
+      struct ifaddrs *ifa = nullptr;
+      if (getifaddrs(&ifa) == 0)
+      {
+        for (struct ifaddrs *i = ifa; i; i = i->ifa_next)
+          if (i->ifa_addr && i->ifa_addr->sa_family == AF_INET && i->ifa_broadaddr && (i->ifa_flags & IFF_BROADCAST))
+            targets.push_back(((sockaddr_in *)i->ifa_broadaddr)->sin_addr.s_addr);
+        freeifaddrs(ifa);
+      }
+      for (in_addr_t t : targets)
+      {
+        sockaddr_in sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sin_family = AF_INET;
+        sa.sin_port = htons(kPort);
+        sa.sin_addr.s_addr = t;
+        sendto(s, msg.data(), msg.size(), 0, (sockaddr *)&sa, sizeof(sa));
+      }
+      for (int i = 0; i < 10 && !beaconStop; i++)
+        usleep(100000);
+    }
+    close(s);
+  }
+
+  void ListenRun()
+  {
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0)
+      return;
+    int one = 1;
+    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(kPort);
+    sa.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(s, (sockaddr *)&sa, sizeof(sa)) != 0)
+    {
+      close(s);
+      return;
+    }
+    while (!listenStop)
+    {
+      struct pollfd pf = { s, POLLIN, 0 };
+      if (poll(&pf, 1, 250) <= 0)
+        continue;
+      char buf[256];
+      sockaddr_in from;
+      socklen_t fl = sizeof(from);
+      ssize_t n = recvfrom(s, buf, sizeof(buf) - 1, 0, (sockaddr *)&from, &fl);
+      if (n <= 0)
+        continue;
+      buf[n] = 0;
+      std::string m(buf);
+      // LWVR1|code|game|port
+      std::vector<std::string> f;
+      size_t a = 0;
+      for (size_t b; (b = m.find('|', a)) != std::string::npos; a = b + 1)
+        f.push_back(m.substr(a, b - a));
+      f.push_back(m.substr(a));
+      if (f.size() != 4 || f[0] != "LWVR1" || f[2] != listenGame)
+        continue;
+      char ip[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
+      Seen sn;
+      sn.room = { f[1], ip, atoi(f[3].c_str()) };
+      sn.seen = std::chrono::steady_clock::now();
+      std::lock_guard<std::mutex> l(mu);
+      rooms[f[1] + "@" + ip] = sn;
+    }
+    close(s);
+  }
 #endif
 };
 

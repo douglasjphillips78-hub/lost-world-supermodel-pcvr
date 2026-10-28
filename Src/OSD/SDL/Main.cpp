@@ -1324,6 +1324,7 @@ struct NetCtx
   int64_t sentFrame = -1;        // last game frame whose input we have already sent
   std::map<uint64_t, CInputs::GameState> own;   // our inputs for the frames to come
   bool desyncLogged = false;
+  std::string lastMsg;           // why the last session ended
 };
 static NetCtx s_net;
 
@@ -1355,6 +1356,7 @@ static CInputs::GameState NetMerge(const CInputs::GameState &h, const CInputs::G
 static void NetAbort(const char *why)
 {
   InfoLog("[LOCKSTEP] two-player stopped: %s", why);
+  s_net.lastMsg = why;
   if (s_lock.inputs)
     s_lock.inputs->SetGameInputsFrozen(false);
   CRTC72421::SetFixedTime(false, 0);
@@ -1374,6 +1376,128 @@ static bool NetLoadSnapshot(CModel3 *m)
   m->ResumeThreads();
   SetAudioEnabled(true);
   return ok;
+}
+
+// Start a session (menu, or the ini keys): role 1 host, 2 join the host at addr:port
+static bool NetStartRuntime(int role, const std::string &addr, int port)
+{
+  if (s_net.role || s_lock.mode || !s_lock.inputs || !s_lock.game)
+    return false;
+  LockNet &n = s_net.net;
+  n.role = role;
+  n.addr = addr;
+  n.port = port;
+  n.delay = std::clamp(s_runtime_config["LockstepDelay"].ValueAsDefault<int>(4), 1, 20);
+  n.config = s_runtime_config["PowerPCFrequency"].ValueAsDefault<unsigned>(0);
+  n.gameName = s_lock.game->name;
+  std::string err;
+  if (!n.Start(err))
+  {
+    s_net.lastMsg = err;
+    InfoLog("[LOCKSTEP] two-player unavailable: %s", err.c_str());
+    return false;
+  }
+  s_net.role = role;
+  s_net.phase = 1;
+  s_net.sentFrame = -1;
+  s_net.own.clear();
+  s_net.desyncLogged = false;
+  s_net.lastMsg.clear();
+  InfoLog("[LOCKSTEP] two-player %s, port %d%s%s", role == 1 ? "host" : "join", port, role == 2 ? ", host " : "", role == 2 ? addr.c_str() : "");
+  return true;
+}
+
+// The menu's 2 PLAYER tab
+static LockDisco s_disco;
+static int s_netUiMode = 0;          // 0 idle, 1 hosting, 2 searching, 3 joining
+static std::string s_netUiCode, s_netUiFail;
+
+static void NetUiStopAll()
+{
+  s_disco.StopBeacon();
+  s_disco.StopListen();
+  s_netUiMode = 0;
+}
+
+static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
+{
+  if (mr.netStop)
+  {
+    if (s_net.role)
+      NetAbort("stopped from the menu");
+    NetUiStopAll();
+    s_netUiFail.clear();
+  }
+  if (mr.netHost && s_netUiMode == 0)
+  {
+    char code[8];
+    snprintf(code, sizeof(code), "%04u", (unsigned)(SDL_GetPerformanceCounter() % 9000ull) + 1000u);
+    s_netUiFail.clear();
+    if (NetStartRuntime(LockNet::HOST, "", 1990))
+    {
+      s_netUiCode = code;
+      s_disco.StartBeacon(s_netUiCode, s_lock.game->name, 1990);
+      s_netUiMode = 1;
+    }
+    else
+      s_netUiFail = s_net.lastMsg.empty() ? "Could not start" : s_net.lastMsg;
+  }
+  if (mr.netFind && s_netUiMode == 0)
+  {
+    s_netUiFail.clear();
+    s_disco.StartListen(s_lock.game->name);
+    s_netUiMode = 2;
+  }
+  if (mr.netJoin >= 0 && mr.netJoin < (int)s.netRooms.size() && s_netUiMode == 2)
+  {
+    const VRSettings::NetRoom room = s.netRooms[mr.netJoin];
+    s_disco.StopListen();
+    if (NetStartRuntime(LockNet::JOIN, room.addr, room.port))
+      s_netUiMode = 3;
+    else
+    {
+      s_netUiFail = s_net.lastMsg.empty() ? "Could not start" : s_net.lastMsg;
+      s_netUiMode = 0;
+    }
+  }
+}
+
+// Every frame: what the 2 PLAYER tab shows
+static void NetUiUpdate(VRSettings &s)
+{
+  s.netAvail = s_lock.game && s_lock.game->name == "lostwsga" && !s_lock.mode;
+  if ((s_netUiMode == 1 || s_netUiMode == 3) && !s_net.role)
+  {
+    s_netUiFail = s_net.lastMsg.empty() ? "The session ended" : s_net.lastMsg;
+    NetUiStopAll();
+  }
+  if (s_netUiMode == 1 && s_net.net.connected)
+    s_disco.StopBeacon();
+  s.netCode = s_netUiCode;
+  s.netRooms.clear();
+  switch (s_netUiMode)
+  {
+  case 0:
+    s.netPhase = s_netUiFail.empty() ? 0 : 5;
+    s.netStatus = s_netUiFail;
+    break;
+  case 1:
+    s.netPhase = s_net.phase == 3 ? 4 : (s_net.net.connected ? 3 : 1);
+    s.netStatus = s_net.phase == 3 ? "Playing together" : (s_net.net.connected ? "Connected - starting..." : "Waiting for your friend...");
+    break;
+  case 2:
+    s.netPhase = 2;
+    for (const LockDisco::Room &r : s_disco.Rooms())
+      s.netRooms.push_back({ r.code, r.addr, r.port });
+    s.netStatus = "Both headsets must be on the same Wi-Fi";
+    break;
+  case 3:
+    s.netPhase = s_net.phase == 3 ? 4 : 3;
+    s.netStatus = s_net.phase == 3 ? "Playing together" : "Connecting...";
+    break;
+  }
+  if (s.netPhase == 4 && (s_net.desyncLogged || s_net.net.desync))
+    s.netStatus = "Out of sync - restart the game on both";
 }
 
 static void NetBegin(CModel3 *m)
@@ -2177,26 +2301,11 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       s_lock.calCount = vrGunCal->count;
       memcpy(s_lock.cal, vrGunCal->bytes, sizeof(s_lock.cal));
     }
-    // Two headsets: LockstepRole 1 = host, 2 = join (LockstepHost = the host's IP address)
+    // Two headsets from the ini: LockstepRole 1 = host, 2 = join (LockstepHost = the host's IP address)
     const int netRole = std::clamp(s_runtime_config["LockstepRole"].ValueAsDefault<int>(0), 0, 2);
     if (netRole && !s_lock.mode)
-    {
-      s_net.net.role = netRole;
-      s_net.net.addr = s_runtime_config["LockstepHost"].ValueAsDefault<std::string>("192.168.1.2");
-      s_net.net.port = std::clamp(s_runtime_config["LockstepPort"].ValueAsDefault<int>(1990), 1024, 65535);
-      s_net.net.delay = std::clamp(s_runtime_config["LockstepDelay"].ValueAsDefault<int>(4), 1, 20);
-      s_net.net.config = s_runtime_config["PowerPCFrequency"].ValueAsDefault<unsigned>(0);
-      s_net.net.gameName = game.name;
-      std::string err;
-      if (s_net.net.Start(err))
-      {
-        s_net.role = netRole;
-        s_net.phase = 1;
-        InfoLog("[LOCKSTEP] two-player %s, port %d%s%s", netRole == 1 ? "host" : "join", s_net.net.port, netRole == 2 ? ", host " : "", netRole == 2 ? s_net.net.addr.c_str() : "");
-      }
-      else
-        InfoLog("[LOCKSTEP] two-player unavailable: %s", err.c_str());
-    }
+      NetStartRuntime(netRole, s_runtime_config["LockstepHost"].ValueAsDefault<std::string>("192.168.1.2"),
+                      std::clamp(s_runtime_config["LockstepPort"].ValueAsDefault<int>(1990), 1024, 65535));
     if (s_lock.mode)
       InfoLog("[LOCKSTEP] test mode %d (%s), snapshot '%s', inputs '%s'", s_lock.mode, s_lock.mode == 1 ? "record" : "replay", s_lock.statePath.c_str(), s_lock.logPath.c_str());
   }
@@ -2333,6 +2442,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
         bool toggle = menuButton && !s_vrPrevMenuButton;
         s_vrPrevMenuButton = menuButton;
         VRMenuResult mr;
+        NetUiUpdate(s_vrSettings);
         if (s_vrMenuOpen)
         {
           // pointer: the gun hand if it points at the panel, else the other hand
@@ -2347,6 +2457,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
             VRApplySettings(*xr);
             VRSaveSettings();
           }
+          NetMenuHandle(mr, s_vrSettings);
           if (mr.recenter)
             xr->Recenter();
           if (mr.quit)

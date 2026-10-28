@@ -6,6 +6,7 @@
 
 #include <GL/glew.h>
 #include <string>
+#include <vector>
 
 // Every option the menu can change. Saved to Config/Supermodel.ini when changed.
 struct VRSettings
@@ -31,6 +32,14 @@ struct VRSettings
   float aimNudgeY   = 0.0f;   // aim fine-tune, degrees (+ = up)
   float renderScale = 1.0f;   // eye resolution, applied on the next start
   int   hudFilter   = 1;      // 2D layer scaling: 0 soft, 1 sharp, 2 smooth edges
+
+  // Two-player over the LAN (set by the program every frame, not saved)
+  struct NetRoom { std::string code, addr; int port = 0; };
+  bool  netAvail    = false;  // the game supports two headsets
+  int   netPhase    = 0;      // 0 idle, 1 hosting (waiting), 2 searching, 3 connecting / starting, 4 playing, 5 failed
+  std::string netStatus;
+  std::string netCode;        // the room code while hosting
+  std::vector<NetRoom> netRooms;
 };
 
 struct VRMenuResult
@@ -39,6 +48,10 @@ struct VRMenuResult
   bool resume   = false;
   bool recenter = false;
   bool quit     = false;
+  bool netHost  = false;   // "host a game" pressed
+  bool netFind  = false;   // "find a game" pressed
+  bool netStop  = false;   // "stop" pressed
+  int  netJoin  = -1;      // index into netRooms to join
 };
 
 class VRMenu

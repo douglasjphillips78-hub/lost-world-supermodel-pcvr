@@ -436,6 +436,47 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
       r.changed |= Stepper("Render resolution (next start)", &s.renderScale, 0.1f, 0.5f, 1.5f, "%.1fx");
       ImGui::EndTabItem();
     }
+    if (s.netAvail && ImGui::BeginTabItem("  2 PLAYER  "))
+    {
+      ImGui::TextUnformatted("TWO HEADSETS ON THE SAME WI-FI");
+      ImGui::Spacing();
+      const float fw = ImGui::GetContentRegionAvail().x;
+      if (s.netPhase == 0 || s.netPhase == 5)
+      {
+        if (ImGui::Button("HOST A GAME", ImVec2(fw * 0.5f - 4, 0)))
+          r.netHost = true;
+        ImGui::SameLine();
+        if (ImGui::Button("FIND A GAME", ImVec2(fw * 0.5f - 4, 0)))
+          r.netFind = true;
+      }
+      else if (s.netPhase == 1)
+      {
+        ImGui::TextUnformatted(Caps(("Room code  " + s.netCode).c_str()).c_str());
+        ImGui::TextUnformatted("YOUR FRIEND CHOOSES FIND A GAME AND PICKS THIS ROOM");
+      }
+      else if (s.netPhase == 2)
+      {
+        if (s.netRooms.empty())
+          ImGui::TextUnformatted("LOOKING FOR ROOMS...");
+        for (size_t i = 0; i < s.netRooms.size(); i++)
+        {
+          const std::string label = Caps(("Join room " + s.netRooms[i].code + "  (" + s.netRooms[i].addr + ")").c_str());
+          ImGui::PushID((int)i);
+          if (ImGui::Button(label.c_str(), ImVec2(fw, 0)))
+            r.netJoin = (int)i;
+          ImGui::PopID();
+        }
+      }
+      ImGui::Spacing();
+      ImGui::TextUnformatted(Caps(s.netStatus.c_str()).c_str());
+      if (s.netPhase != 0 && s.netPhase != 5)
+      {
+        ImGui::Spacing();
+        if (ImGui::Button("STOP", ImVec2(fw, 0)))
+          r.netStop = true;
+      }
+      ImGui::EndTabItem();
+    }
     ImGui::EndTabBar();
   }
 
