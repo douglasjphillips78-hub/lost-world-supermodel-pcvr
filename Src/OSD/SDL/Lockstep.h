@@ -30,6 +30,7 @@
 
 #if !defined(_WIN32)
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <errno.h>
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -51,6 +52,11 @@ public:
   int role = OFF;
   int port = 1990;
   std::string addr;
+  // Over the internet: both headsets connect OUT to a relay server (relayHost:relayPort), which
+  // pairs them by room code and passes their bytes on. Nobody needs to open a port.
+  bool relay = false;
+  std::string relayHost, relayCode;
+  int relayPort = 1992;
   int delay = 4;                       // game frames of input delay (hides the network latency)
   uint32_t config = 0;                 // must match on both machines
   std::string gameName;
@@ -140,7 +146,7 @@ public:
     return true;
   }
 
-  std::string Status() const { return status; }
+  std::string Status() const { std::lock_guard<std::mutex> l(stMu); return status; }
 
 private:
   std::atomic<bool> stop{false};
@@ -148,7 +154,9 @@ private:
   std::mutex mu, sendMu;
   std::map<uint32_t, GameState> remote;
   std::map<uint32_t, uint64_t> myHash, theirHash;
+  mutable std::mutex stMu;
   std::string status;
+  void SetStatus(const std::string &t) { std::lock_guard<std::mutex> l(stMu); status = t; }
   int fd = -1, listenFd = -1;
 
 #ifdef LOCKNET_AVAILABLE
@@ -219,31 +227,34 @@ private:
     return true;
   }
 
-  bool Connect()
+  bool Connect() { return ConnectTo(addr, port); }
+
+  // Connect to host:port (an address or a name), trying again every second until it works.
+  bool ConnectTo(const std::string &host, int tcpPort)
   {
-    // Joiner: try again every second until the host is there
     while (!stop)
     {
-      int s = socket(AF_INET, SOCK_STREAM, 0);
-      sockaddr_in sa;
-      memset(&sa, 0, sizeof(sa));
-      sa.sin_family = AF_INET;
-      sa.sin_port = htons((uint16_t)port);
-      if (inet_pton(AF_INET, addr.c_str(), &sa.sin_addr) != 1)
+      struct addrinfo hints, *res = nullptr;
+      memset(&hints, 0, sizeof(hints));
+      hints.ai_family = AF_INET;
+      hints.ai_socktype = SOCK_STREAM;
+      if (getaddrinfo(host.c_str(), std::to_string(tcpPort).c_str(), &hints, &res) != 0 || !res)
       {
-        status = "LockstepHost is not an IPv4 address: " + addr;
-        close(s);
-        return false;
+        SetStatus("cannot find " + host);
+        for (int i = 0; i < 20 && !stop; i++)
+          usleep(100000);
+        continue;
       }
-      // connect with a timeout (non-blocking + poll)
+      int s = socket(AF_INET, SOCK_STREAM, 0);
       int fl = fcntl(s, F_GETFL, 0);
       fcntl(s, F_SETFL, fl | O_NONBLOCK);
-      int r = connect(s, (sockaddr *)&sa, sizeof(sa));
+      int r = connect(s, res->ai_addr, res->ai_addrlen);
+      freeaddrinfo(res);
       bool ok = r == 0;
       if (r < 0 && errno == EINPROGRESS)
       {
         struct pollfd pf = { s, POLLOUT, 0 };
-        if (poll(&pf, 1, 1500) > 0)
+        if (poll(&pf, 1, 3000) > 0)
         {
           int e = 0;
           socklen_t el = sizeof(e);
@@ -264,6 +275,51 @@ private:
     return false;
   }
 
+  // Read one text line (up to the newline) from the relay
+  bool RecvLine(std::string &line)
+  {
+    line.clear();
+    while (line.size() < 200)
+    {
+      char c;
+      if (!RecvAll(&c, 1))
+        return false;
+      if (c == '\n')
+        return true;
+      line += c;
+    }
+    return false;
+  }
+
+  // Meet the other headset through the relay
+  bool ConnectRelay()
+  {
+    SetStatus("connecting to the relay server");
+    if (!ConnectTo(relayHost, relayPort))
+      return false;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+    const std::string req = std::string(role == HOST ? "HOST " : "JOIN ") + relayCode + " " + gameName + "\n";
+    if (!SendAll(fd, req.data(), req.size()))
+    {
+      SetStatus("the relay server hung up");
+      return false;
+    }
+    SetStatus(role == HOST ? "waiting for your friend" : "joining the room");
+    std::string line;
+    if (!RecvLine(line))
+    {
+      if (!stop) SetStatus("the relay server hung up");
+      return false;
+    }
+    if (line != "OK")
+    {
+      SetStatus(line == "NO" ? "no such room - check the code" : "the relay refused: " + line);
+      return false;
+    }
+    return true;
+  }
+
   bool Accept()
   {
     listenFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -276,7 +332,7 @@ private:
     sa.sin_port = htons((uint16_t)port);
     if (bind(listenFd, (sockaddr *)&sa, sizeof(sa)) != 0 || listen(listenFd, 1) != 0)
     {
-      status = "cannot listen on the port";
+      SetStatus("cannot listen on the port");
       return false;
     }
     while (!stop)
@@ -298,8 +354,9 @@ private:
 
   void Run()
   {
-    status = role == HOST ? "waiting for the other headset" : "looking for the host";
-    if (!(role == HOST ? Accept() : Connect()))
+    SetStatus(role == HOST ? "waiting for the other headset" : "looking for the host");
+    helloBad = false;
+    if (!(relay ? ConnectRelay() : (role == HOST ? Accept() : Connect())))
     {
       dead = true;
       return;
@@ -307,7 +364,7 @@ private:
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     connected = true;
-    status = "connected";
+    SetStatus("connected");
 
     // hello
     {
@@ -337,7 +394,7 @@ private:
     }
     connected = false;
     dead = true;
-    status = "connection lost";
+    SetStatus("connection lost");
   }
 
   void Handle(char type, const std::vector<uint8_t> &p)
@@ -353,11 +410,11 @@ private:
       }
       std::string name = (p.size() >= 16 + n) ? std::string((const char *)&p[16], n) : std::string();
       if (magic != 0x4C4B5354 || ver != 1)
-        status = "the other headset runs a different version";
+        SetStatus("the other headset runs a different version");
       else if (name != gameName)
-        status = "the other headset runs a different game";
+        SetStatus("the other headset runs a different game");
       else if (cfg != config)
-        status = "the settings differ (PowerPCFrequency must match)";
+        SetStatus("the settings differ (PowerPCFrequency must match)");
       else
       {
         peerHello = true;

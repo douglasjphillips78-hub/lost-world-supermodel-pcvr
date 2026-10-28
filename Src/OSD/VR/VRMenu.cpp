@@ -438,21 +438,53 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
     }
     if (s.netAvail && ImGui::BeginTabItem("  2 PLAYER  "))
     {
-      ImGui::TextUnformatted("TWO HEADSETS ON THE SAME WI-FI");
+      ImGui::TextUnformatted("TWO HEADSETS");
       ImGui::Spacing();
       const float fw = ImGui::GetContentRegionAvail().x;
       if (s.netPhase == 0 || s.netPhase == 5)
       {
+        ImGui::TextUnformatted("SAME WI-FI");
         if (ImGui::Button("HOST A GAME", ImVec2(fw * 0.5f - 4, 0)))
           r.netHost = true;
         ImGui::SameLine();
         if (ImGui::Button("FIND A GAME", ImVec2(fw * 0.5f - 4, 0)))
           r.netFind = true;
+        ImGui::Spacing();
+        ImGui::TextUnformatted("OVER THE INTERNET");
+        if (ImGui::Button("HOST ONLINE", ImVec2(fw * 0.5f - 4, 0)))
+          r.netHostOnline = true;
+        ImGui::SameLine();
+        if (ImGui::Button("JOIN ONLINE", ImVec2(fw * 0.5f - 4, 0)))
+          r.netTypeCode = true;
+      }
+      else if (s.netPhase == 6)
+      {
+        ImGui::TextUnformatted(Caps(("Room code:  " + s.netTyped + "_").c_str()).c_str());
+        const float kw = (fw - 2 * ImGui::GetStyle().ItemSpacing.x) / 3.0f;
+        for (int k = 1; k <= 12; k++)
+        {
+          const int d = k <= 9 ? k : (k == 11 ? 0 : -1);   // 10 = back, 12 = connect
+          char label[16];
+          if (k == 10) snprintf(label, sizeof(label), "DEL");
+          else if (k == 12) snprintf(label, sizeof(label), "GO");
+          else snprintf(label, sizeof(label), "%d", d);
+          if ((k - 1) % 3)
+            ImGui::SameLine();
+          ImGui::PushID(k);
+          if (ImGui::Button(label, ImVec2(kw, 0)))
+          {
+            if (k == 10) { if (!s.netTyped.empty()) s.netTyped.pop_back(); }
+            else if (k == 12) { if (s.netTyped.size() >= 4) r.netConnectCode = true; }
+            else if (s.netTyped.size() < 8) s.netTyped += (char)('0' + d);
+          }
+          ImGui::PopID();
+        }
       }
       else if (s.netPhase == 1)
       {
         ImGui::TextUnformatted(Caps(("Room code  " + s.netCode).c_str()).c_str());
-        ImGui::TextUnformatted("YOUR FRIEND CHOOSES FIND A GAME AND PICKS THIS ROOM");
+        ImGui::TextUnformatted(s.netOnline ? "YOUR FRIEND CHOOSES JOIN ONLINE AND TYPES THIS CODE"
+                                           : "YOUR FRIEND CHOOSES FIND A GAME AND PICKS THIS ROOM");
       }
       else if (s.netPhase == 2)
       {
@@ -472,7 +504,7 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
       if (s.netPhase != 0 && s.netPhase != 5)
       {
         ImGui::Spacing();
-        if (ImGui::Button("STOP", ImVec2(fw, 0)))
+        if (ImGui::Button(s.netPhase == 6 ? "CANCEL" : "STOP", ImVec2(fw, 0)))
           r.netStop = true;
       }
       ImGui::EndTabItem();

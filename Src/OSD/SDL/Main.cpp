@@ -1379,7 +1379,7 @@ static bool NetLoadSnapshot(CModel3 *m)
 }
 
 // Start a session (menu, or the ini keys): role 1 host, 2 join the host at addr:port
-static bool NetStartRuntime(int role, const std::string &addr, int port)
+static bool NetStartRuntime(int role, const std::string &addr, int port, const std::string &relayCode = std::string())
 {
   if (s_net.role || s_lock.mode || !s_lock.inputs || !s_lock.game)
     return false;
@@ -1387,7 +1387,28 @@ static bool NetStartRuntime(int role, const std::string &addr, int port)
   n.role = role;
   n.addr = addr;
   n.port = port;
-  n.delay = std::clamp(s_runtime_config["LockstepDelay"].ValueAsDefault<int>(4), 1, 20);
+  n.relay = !relayCode.empty();
+  if (n.relay)
+  {
+    // LockstepRelay = "host" or "host:port" of the relay server (Server/lwvr_relay.py)
+    std::string r = s_runtime_config["LockstepRelay"].ValueAsDefault<std::string>("");
+    if (r.empty())
+    {
+      s_net.lastMsg = "Set LockstepRelay in Supermodel.ini first";
+      return false;
+    }
+    n.relayPort = 1992;
+    const size_t colon = r.rfind(':');
+    if (colon != std::string::npos)
+    {
+      n.relayPort = atoi(r.c_str() + colon + 1);
+      r = r.substr(0, colon);
+    }
+    n.relayHost = r;
+    n.relayCode = relayCode;
+  }
+  // over the internet the round trip is longer, so more frames of input delay
+  n.delay = std::clamp(s_runtime_config[n.relay ? "LockstepOnlineDelay" : "LockstepDelay"].ValueAsDefault<int>(n.relay ? 6 : 4), 1, 20);
   n.config = s_runtime_config["PowerPCFrequency"].ValueAsDefault<unsigned>(0);
   n.gameName = s_lock.game->name;
   std::string err;
@@ -1442,6 +1463,35 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
     else
       s_netUiFail = s_net.lastMsg.empty() ? "Could not start" : s_net.lastMsg;
   }
+  if (mr.netHostOnline && s_netUiMode == 0)
+  {
+    char code[8];
+    snprintf(code, sizeof(code), "%06u", (unsigned)(SDL_GetPerformanceCounter() % 900000ull) + 100000u);
+    s_netUiFail.clear();
+    if (NetStartRuntime(LockNet::HOST, "", 0, code))
+    {
+      s_netUiCode = code;
+      s_netUiMode = 4;
+    }
+    else
+      s_netUiFail = s_net.lastMsg.empty() ? "Could not start" : s_net.lastMsg;
+  }
+  if (mr.netTypeCode && s_netUiMode == 0)
+  {
+    s_netUiFail.clear();
+    s.netTyped.clear();
+    s_netUiMode = 5;
+  }
+  if (mr.netConnectCode && s_netUiMode == 5)
+  {
+    if (NetStartRuntime(LockNet::JOIN, "", 0, s.netTyped))
+      s_netUiMode = 6;
+    else
+    {
+      s_netUiFail = s_net.lastMsg.empty() ? "Could not start" : s_net.lastMsg;
+      s_netUiMode = 0;
+    }
+  }
   if (mr.netFind && s_netUiMode == 0)
   {
     s_netUiFail.clear();
@@ -1466,7 +1516,10 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
 static void NetUiUpdate(VRSettings &s)
 {
   s.netAvail = s_lock.game && s_lock.game->name == "lostwsga" && !s_lock.mode;
-  if ((s_netUiMode == 1 || s_netUiMode == 3) && !s_net.role)
+  // a session that failed while the game is paused (the menu is open) is noticed here
+  if (s_net.role && (s_net.net.dead || s_net.net.helloBad))
+    NetAbort(s_net.net.Status().c_str());
+  if ((s_netUiMode == 1 || s_netUiMode == 3 || s_netUiMode == 4 || s_netUiMode == 6) && !s_net.role)
   {
     s_netUiFail = s_net.lastMsg.empty() ? "The session ended" : s_net.lastMsg;
     NetUiStopAll();
@@ -1474,6 +1527,7 @@ static void NetUiUpdate(VRSettings &s)
   if (s_netUiMode == 1 && s_net.net.connected)
     s_disco.StopBeacon();
   s.netCode = s_netUiCode;
+  s.netOnline = s_netUiMode >= 4;
   s.netRooms.clear();
   switch (s_netUiMode)
   {
@@ -1484,6 +1538,18 @@ static void NetUiUpdate(VRSettings &s)
   case 1:
     s.netPhase = s_net.phase == 3 ? 4 : (s_net.net.connected ? 3 : 1);
     s.netStatus = s_net.phase == 3 ? "Playing together" : (s_net.net.connected ? "Connected - starting..." : "Waiting for your friend...");
+    break;
+  case 4:
+    s.netPhase = s_net.phase == 3 ? 4 : (s_net.net.connected && s_net.net.peerHello ? 3 : 1);
+    s.netStatus = s_net.phase == 3 ? "Playing together" : (s_net.net.connected && s_net.net.peerHello ? "Friend joined - starting..." : s_net.net.Status());
+    break;
+  case 5:
+    s.netPhase = 6;
+    s.netStatus = "Type the code your friend sees";
+    break;
+  case 6:
+    s.netPhase = s_net.phase == 3 ? 4 : 3;
+    s.netStatus = s_net.phase == 3 ? "Playing together" : s_net.net.Status();
     break;
   case 2:
     s.netPhase = 2;
@@ -1518,7 +1584,7 @@ static bool NetPre(CModel3 *m)
   LockNet &net = s_net.net;
   if (net.dead || net.helloBad)
   {
-    NetAbort(net.helloBad ? net.Status().c_str() : "connection lost");
+    NetAbort(net.Status().c_str());
     return true;
   }
   if (s_net.phase == 1)
