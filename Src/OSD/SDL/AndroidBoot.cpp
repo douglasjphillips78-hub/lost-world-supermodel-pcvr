@@ -131,10 +131,13 @@ bool PresetIsNewer(const std::string& bundled)
     return false;
   std::ifstream f("Config/Supermodel.ini", std::ios::binary);
   std::string have((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  if (IniVersion(have) >= wanted)
+  const int installed = IniVersion(have);
+  if (installed >= wanted)
     return false;
-  std::remove("Config/Supermodel.ini.bak");
-  std::rename("Config/Supermodel.ini", "Config/Supermodel.ini.bak");
+  // keep the old file: the first time as .bak, after an earlier preset as .v<N>.bak (so nothing is lost)
+  const std::string bak = installed == 0 ? "Config/Supermodel.ini.bak" : "Config/Supermodel.ini.v" + std::to_string(installed) + ".bak";
+  std::remove(bak.c_str());
+  std::rename("Config/Supermodel.ini", bak.c_str());
   __android_log_print(ANDROID_LOG_INFO, kTag, "settings preset %d installed (old file kept as Supermodel.ini.bak)", wanted);
   return true;
 }
