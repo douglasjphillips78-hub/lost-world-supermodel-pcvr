@@ -19,7 +19,8 @@ IDLE_LIMIT = 45                # seconds without any data from a side = the sess
 SESSION_LIMIT = 500 * 2**20    # bytes per session (a game is ~20 MB/hour plus a ~15 MB snapshot)
 MAX_ROOMS = 200
 
-directory = {}                 # (game, code) -> (ip, port, time): rooms hosted directly (see PUT/GET)
+directory = {}                 # (game, code) -> (ip, port, time, public): rooms hosted directly (see PUT/GET)
+LISTING_LIFE = 150             # a public direct room is listed while its host keeps refreshing it (every ~60 s)
 DIRECTORY_LIFE = 2 * 3600
 rooms = {}                     # (game, code) -> (reader, writer, done_event)
 CODE_RE = re.compile(r"^[A-Za-z0-9]{4,12}$")
@@ -50,6 +51,21 @@ async def handle(reader, writer):
     try:
         line = await asyncio.wait_for(reader.readline(), 10)
         parts = line.decode("ascii", "replace").split()
+        if len(parts) == 2 and parts[0] == "LIST" and GAME_RE.match(parts[1]):
+            # The public game list: "ROOM <code> D|R <seconds>" lines (D = joinable directly, R = through
+            # this relay), then END. Addresses are only handed out to someone who asks to join.
+            now = time.time()
+            out = []
+            for (g, c), v in list(directory.items()):
+                if g == parts[1] and v[3] and now - v[2] < LISTING_LIFE:
+                    out.append(f"ROOM {c} D {int(now - v[2])}")
+            for (g, c), v in list(rooms.items()):
+                if g == parts[1] and v[3]:
+                    out.append(f"ROOM {c} R {int(now - v[4])}")
+            writer.write(("\n".join(out[:40]) + ("\n" if out else "") + "END\n").encode())
+            await writer.drain()
+            writer.close()
+            return
         if parts and parts[0] in ("PUT", "GET", "DEL") and len(parts) >= 3 and CODE_RE.match(parts[1]) and GAME_RE.match(parts[2]):
             # The directory: a host that can be reached directly leaves its address under its room
             # code, a joiner asks for it. (Lets people pick their own code without the relay
@@ -58,12 +74,14 @@ async def handle(reader, writer):
             for k in [k for k, v in directory.items() if now - v[2] > DIRECTORY_LIFE]:
                 del directory[k]
             key = (parts[2], parts[1])
-            if parts[0] == "PUT" and len(parts) == 4 and parts[3].isdigit() and 0 < int(parts[3]) < 65536:
+            if parts[0] == "PUT" and len(parts) in (4, 5) and parts[3].isdigit() and 0 < int(parts[3]) < 65536:
                 if key in directory and directory[key][0] != peer[0] and now - directory[key][2] < 600:
                     writer.write(b"BUSY\n")
                 else:
-                    directory[key] = (peer[0], int(parts[3]), now)
-                    log(f"directory: {parts[1]} ({parts[2]}) -> {peer[0]}:{parts[3]}")
+                    public = len(parts) == 5 and parts[4] == "pub"
+                    if key not in directory:
+                        log(f"directory: {parts[1]} ({parts[2]}) -> {peer[0]}:{parts[3]}{' (public)' if public else ''}")
+                    directory[key] = (peer[0], int(parts[3]), now, public)
                     writer.write(b"OK\n")
             elif parts[0] == "GET" and len(parts) == 3:
                 e = directory.get(key)
@@ -77,6 +95,9 @@ async def handle(reader, writer):
             await writer.drain()
             writer.close()
             return
+        public = len(parts) == 4 and parts[0] == "HOST" and parts[3] == "pub"
+        if public:
+            parts = parts[:3]
         if len(parts) != 3 or parts[0] not in ("HOST", "JOIN") or not CODE_RE.match(parts[1]) or not GAME_RE.match(parts[2]):
             writer.write(b"BAD\n")
             await writer.drain()
@@ -92,7 +113,7 @@ async def handle(reader, writer):
                 writer.close()
                 return
             done = asyncio.Event()
-            rooms[key] = (reader, writer, done)
+            rooms[key] = (reader, writer, done, public, time.time())
             log(f"room {code} ({game}) opened by {peer[0]}")
             try:
                 await asyncio.wait_for(done.wait(), WAIT_FOR_JOINER)
@@ -110,7 +131,7 @@ async def handle(reader, writer):
             await writer.drain()
             writer.close()
             return
-        hreader, hwriter, done = room
+        hreader, hwriter, done = room[:3]
         log(f"room {code} ({game}): {peer[0]} joined")
         hwriter.write(b"OK\n")
         writer.write(b"OK\n")

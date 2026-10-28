@@ -58,6 +58,7 @@ public:
   // pairs them by room code and passes their bytes on. Nobody needs to open a port.
   bool relay = false;
   std::string relayHost, relayCode;
+  bool relayPublic = false;            // list this room in the relay's public game list
   int relayPort = 1992;
   int connectTimeout = 0;              // seconds to keep trying to reach the host (0 = for ever)
   int delay = 4;                       // game frames of input delay (hides the network latency)
@@ -153,7 +154,7 @@ public:
 
   // One short question to the relay's directory ("PUT code game port", "GET code game", "DEL ..."):
   // sends one line, returns the one-line reply. Blocks for at most a few seconds.
-  static bool Ask(const std::string &host, int tcpPort, const std::string &line, std::string &reply, int timeoutMs = 5000)
+  static bool Ask(const std::string &host, int tcpPort, const std::string &line, std::string &reply, int timeoutMs = 5000, bool multiLine = false)
   {
 #ifdef LOCKNET_AVAILABLE
     reply.clear();
@@ -183,7 +184,7 @@ public:
     bool ok = r == 0;
     if (ok)
       ok = SendAll(s, (line + "\n").data(), line.size() + 1);
-    while (ok && reply.find('\n') == std::string::npos && reply.size() < 200)
+    while (ok && (multiLine ? reply.size() < 4000 : (reply.find('\n') == std::string::npos && reply.size() < 200)))
     {
       struct pollfd pf = { s, POLLIN, 0 };
       if (poll(&pf, 1, timeoutMs) <= 0)
@@ -197,7 +198,7 @@ public:
     close(s);
     while (!reply.empty() && (reply.back() == '\n' || reply.back() == '\r'))
       reply.pop_back();
-    return ok && !reply.empty();
+    return !reply.empty() && (ok || multiLine);
 #else
     (void)host; (void)tcpPort; (void)line; (void)timeoutMs;
     return false;
@@ -363,7 +364,8 @@ private:
       return false;
     int one = 1;
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
-    const std::string req = std::string(role == HOST ? "HOST " : "JOIN ") + relayCode + " " + gameName + "\n";
+    const std::string req = std::string(role == HOST ? "HOST " : "JOIN ") + relayCode + " " + gameName +
+                            (role == HOST && relayPublic ? " pub" : "") + "\n";
     if (!SendAll(fd, req.data(), req.size()))
     {
       SetStatus("the relay server hung up");

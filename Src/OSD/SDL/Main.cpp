@@ -1336,6 +1336,7 @@ static NetCtx s_net;
 
 // Voice chat
 static VoiceChat s_voice;
+static bool s_netWantPublic = false;   // the online game being hosted is listed publicly
 
 // Is the microphone allowed? With ask = true the system question is shown if it is not.
 static bool MicAllowed(bool ask)
@@ -1424,6 +1425,7 @@ static bool NetStartRuntime(int role, const std::string &addr, int port, const s
   n.addr = addr;
   n.port = port;
   n.relay = !relayCode.empty();
+  n.relayPublic = s_netWantPublic;
   if (n.relay)
   {
     // LockstepRelay = "host" or "host:port" of the relay server (Server/lwvr_relay.py)
@@ -1524,6 +1526,8 @@ struct DirJob
 };
 static DirJob s_dir;
 static std::string s_netJoinTyped;
+static uint32_t s_netLastDirTicks = 0;
+static std::vector<VRSettings::NetPubRoom> s_netPubCache;
 
 static std::string RandomCode(int digits)
 {
@@ -1535,23 +1539,28 @@ static std::string RandomCode(int digits)
   return code;
 }
 
+// Take the room code out of the relay's directory (best effort, in the background)
+static void NetDirRemove()
+{
+  if (!s_netDirRegistered)
+    return;
+  s_netDirRegistered = false;
+  std::string host;
+  int port;
+  if (RelayAddress(host, port))
+  {
+    const std::string line = "DEL " + s_netUiCode + " " + (s_lock.game ? s_lock.game->name : std::string());
+    std::thread([host, port, line] { std::string r; LockNet::Ask(host, port, line, r, 3000); }).detach();
+  }
+}
+
 static void NetUiStopAll()
 {
   s_disco.StopBeacon();
   s_disco.StopListen();
   s_upnp.Stop();                     // give the router's port back
   s_dir.Wait();
-  if (s_netDirRegistered)
-  {
-    s_netDirRegistered = false;      // take the code out of the directory (best effort, in the background)
-    std::string host;
-    int port;
-    if (RelayAddress(host, port))
-    {
-      const std::string line = "DEL " + s_netUiCode + " " + (s_lock.game ? s_lock.game->name : std::string());
-      std::thread([host, port, line] { std::string r; LockNet::Ask(host, port, line, r, 3000); }).detach();
-    }
-  }
+  NetDirRemove();
   s_netUiMode = 0;
 }
 
@@ -1574,6 +1583,7 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
   if (mr.netConfirmHost && s_netUiMode == 8)
   {
     s_netCustomCode = !s.netTyped.empty();
+    s_netWantPublic = s_netPendingKind == 2 && s.netPublic;
     const std::string code = s_netCustomCode ? s.netTyped : RandomCode(s_netPendingKind == 1 ? 4 : 6);
     s_netUiFail.clear();
     if (s_netPendingKind == 1)
@@ -1597,6 +1607,28 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
       s_upnp.Start(1990);
       s_netUiMode = 7;
     }
+  }
+  if (mr.netBrowse && s_netUiMode == 0)
+  {
+    s_netUiFail.clear();
+    std::string rh;
+    int rp;
+    if (!RelayAddress(rh, rp))
+      s_netUiFail = "Set LockstepRelay in Supermodel.ini to browse public games";
+    else
+    {
+      s_netPubCache.clear();
+      s_dir.Start("LIST " + s_lock.game->name);
+      s_netLastDirTicks = SDL_GetTicks();
+      s_netUiMode = 11;
+    }
+  }
+  if (mr.netJoinPublic >= 0 && mr.netJoinPublic < (int)s.netPubRooms.size() && s_netUiMode == 11)
+  {
+    s_netJoinTyped = s.netPubRooms[mr.netJoinPublic].code;
+    s_dir.Wait();
+    s_dir.Start("GET " + s_netJoinTyped + " " + s_lock.game->name);   // direct host or a room on the relay: as with a typed code
+    s_netUiMode = 10;
   }
   if (mr.netTypeCode && s_netUiMode == 0)
   {
@@ -1708,7 +1740,8 @@ static void NetUiUpdate(VRSettings &s)
       if (started && haveRelay)
       {
         // the relay's directory maps the room code to this headset's address
-        s_dir.Start("PUT " + code + " " + s_lock.game->name + " 1990");
+        s_dir.Start("PUT " + code + " " + s_lock.game->name + " 1990" + (s_netWantPublic ? " pub" : ""));
+        s_netLastDirTicks = SDL_GetTicks();
         s_netDirRegistered = true;
         s_netUiMode = 9;
       }
@@ -1775,6 +1808,42 @@ static void NetUiUpdate(VRSettings &s)
       NetUiStopAll();
     }
   }
+  if (s_netUiMode == 11 && s_dir.state != 1)
+  {
+    if (s_dir.state == 2)
+    {
+      s_netPubCache.clear();
+      size_t a = 0;
+      const std::string &t = s_dir.reply;
+      while (a < t.size())
+      {
+        size_t b = t.find('\n', a);
+        if (b == std::string::npos)
+          b = t.size();
+        char code[32], kind;
+        int age;
+        if (sscanf(t.substr(a, b - a).c_str(), "ROOM %31s %c %d", code, &kind, &age) == 3)
+          s_netPubCache.push_back({ code, kind == 'D', age });
+        a = b + 1;
+      }
+      s_dir.state = 0;
+    }
+    if (SDL_GetTicks() - s_netLastDirTicks > 3000)
+    {
+      s_netLastDirTicks = SDL_GetTicks();
+      s_dir.Start("LIST " + s_lock.game->name);          // refresh the list
+    }
+  }
+  if (s_netUiMode == 4 && s_netDirRegistered)
+  {
+    if (s_net.net.connected)
+      NetDirRemove();                                     // the room is taken: no longer listed
+    else if (s_netWantPublic && s_dir.state != 1 && SDL_GetTicks() - s_netLastDirTicks > 60000)
+    {
+      s_netLastDirTicks = SDL_GetTicks();                 // keep the public listing fresh
+      s_dir.Start("PUT " + s_netUiCode + " " + s_lock.game->name + " 1990 pub");
+    }
+  }
   if (s_netUiMode == 1 && s_net.net.connected)
     s_disco.StopBeacon();
   s.netCode = s_netUiCode;
@@ -1797,6 +1866,11 @@ static void NetUiUpdate(VRSettings &s)
   case 7:
     s.netPhase = 3;
     s.netStatus = "Opening your router...";
+    break;
+  case 11:
+    s.netPhase = 8;
+    s.netPubRooms = s_netPubCache;
+    s.netStatus = "Pick a game to join";
     break;
   case 8:
     s.netPhase = 7;

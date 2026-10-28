@@ -456,12 +456,30 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
         ImGui::SameLine();
         if (ImGui::Button("JOIN ONLINE", ImVec2(fw * 0.5f - 4, 0)))
           r.netTypeCode = true;
+        if (ImGui::Button("BROWSE PUBLIC GAMES", ImVec2(fw, 0)))
+          r.netBrowse = true;
+      }
+      else if (s.netPhase == 8)
+      {
+        if (s.netPubRooms.empty())
+          ImGui::TextUnformatted("NO PUBLIC GAMES RIGHT NOW...");
+        for (size_t i = 0; i < s.netPubRooms.size(); i++)
+        {
+          const VRSettings::NetPubRoom &pr = s.netPubRooms[i];
+          const std::string label = Caps(("Join room " + pr.code + "  (" + std::to_string(pr.age / 60) + " min)").c_str());
+          ImGui::PushID((int)i);
+          if (ImGui::Button(label.c_str(), ImVec2(fw, 0)))
+            r.netJoinPublic = (int)i;
+          ImGui::PopID();
+        }
       }
       else if (s.netPhase == 6 || s.netPhase == 7)
       {
         if (s.netPhase == 7)
           ImGui::TextUnformatted("CHOOSE A ROOM CODE, OR PRESS GO FOR A RANDOM ONE");
         ImGui::TextUnformatted(Caps(("Room code:  " + s.netTyped + "_").c_str()).c_str());
+        if (s.netPhase == 7 && s.netOnline)
+          Toggle("List this game publicly", &s.netPublic);
         const float kw = (fw - 2 * ImGui::GetStyle().ItemSpacing.x) / 3.0f;
         for (int k = 1; k <= 12; k++)
         {

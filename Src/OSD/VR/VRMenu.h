@@ -36,13 +36,16 @@ struct VRSettings
   // Two-player over the LAN (set by the program every frame, not saved)
   struct NetRoom { std::string code, addr; int port = 0; };
   bool  netAvail    = false;  // the game supports two headsets
-  int   netPhase    = 0;      // 0 idle, 1 hosting (waiting), 2 searching, 3 connecting / starting, 4 playing, 5 failed, 6 typing a code to join, 7 choosing a code to host
+  int   netPhase    = 0;      // 0 idle, 1 hosting (waiting), 2 searching, 3 connecting / starting, 4 playing, 5 failed, 6 typing a code to join, 7 choosing a code to host, 8 browsing public games
   std::string netStatus;
   std::string netCode;        // the room code while hosting
   std::vector<NetRoom> netRooms;
   bool  netMuted    = false;  // microphone muted (voice chat)
   bool  netMicOk    = true;   // the microphone is allowed / working (set by the program)
   bool  netTalking = false, netFriendTalking = false;   // set by the program
+  struct NetPubRoom { std::string code; bool direct = false; int age = 0; };
+  std::vector<NetPubRoom> netPubRooms;   // the public game list
+  bool  netPublic   = false;  // list my online game in the public list
   bool  netOnline   = false;  // the session is over the internet (relay)
   std::string netTyped;       // the room code being typed for JOIN ONLINE (phase 6)
 };
@@ -61,6 +64,8 @@ struct VRMenuResult
   bool netHostOnline = false;   // "host online" pressed
   bool netTypeCode   = false;   // "join online" pressed: show the keypad
   bool netConnectCode = false;  // keypad: connect with s.netTyped
+  bool netBrowse = false;       // "browse public games" pressed
+  int  netJoinPublic = -1;      // index into netPubRooms
   int  netJoin  = -1;      // index into netRooms to join
 };
 

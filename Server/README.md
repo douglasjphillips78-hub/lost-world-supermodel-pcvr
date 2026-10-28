@@ -20,3 +20,9 @@ The relay also keeps a small directory: a host that opened its own router port l
 under its room code (`PUT`), and a joiner looks it up (`GET`). That is what lets people choose their
 own short room code and still connect directly, with the relay carrying no game data. Entries expire
 after two hours or when the host stops.
+
+Public game list: a host can tick "List this game publicly" when choosing a room code; anyone can
+then pick it from BROWSE PUBLIC GAMES in the menu. Direct rooms stay listed while their host keeps
+refreshing them (about once a minute) and disappear when a friend joins; relay rooms disappear
+when someone joins. Only the room code and its age are shown; an address is handed out only to
+someone who asks to join.
