@@ -1775,11 +1775,12 @@ static bool NetPre(CModel3 *m)
     ownF = theirs = NetNeutral();
   else
   {
-    ownF = s_net.own[f];
+    auto it = s_net.own.find(f);
+    ownF = it != s_net.own.end() ? it->second : NetNeutral();
     if (!net.GetRemote((uint32_t)f, theirs))
       return false;   // the other headset is a little behind
   }
-  s_net.own.erase(s_net.own.begin(), s_net.own.find(f + 1));
+  s_net.own.erase(s_net.own.begin(), s_net.own.lower_bound(f + 1));   // frames up to f are used
   const CInputs::GameState merged = s_net.role == LockNet::HOST ? NetMerge(ownF, theirs) : NetMerge(theirs, ownF);
   s_lock.inputs->ApplyGameState(merged);
   CRTC72421::SetFixedTime(true, 1700000000LL + (long long)(f / 60));
