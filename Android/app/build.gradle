@@ -86,7 +86,12 @@ tasks.register('bundleAssets') {
         def dest = out.get().asFile
         delete(dest)
         copy {
-            from(new File(repo, 'Config')) { include 'Games.xml', 'Music.xml', 'Supermodel.ini'; into 'Config' }
+            // The Lost World app gets its own preset as Config/Supermodel.ini; Star Wars keeps the general one.
+            from(new File(repo, 'Config')) {
+                include 'Games.xml', 'Music.xml', lostWorldBuild ? 'Supermodel.lostworld.ini' : 'Supermodel.ini'
+                if (lostWorldBuild) rename 'Supermodel.lostworld.ini', 'Supermodel.ini'
+                into 'Config'
+            }
             from(new File(repo, 'Assets')) { exclude 'DIR.txt'; into 'Assets' }
             into dest
         }

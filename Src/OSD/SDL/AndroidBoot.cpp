@@ -8,6 +8,9 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <iterator>
+#include <string>
 #include <fstream>
 #include <thread>
 
@@ -109,6 +112,33 @@ bool AlwaysRefresh(const std::string& rel)
   return rel == "Config/Games.xml" || rel == "Config/Music.xml";
 }
 
+// "IniVersion = N" in a settings file (0 if there is none)
+int IniVersion(const std::string& text)
+{
+  const size_t at = text.find("IniVersion");
+  if (at == std::string::npos)
+    return 0;
+  const size_t eq = text.find('=', at);
+  return eq == std::string::npos ? 0 : atoi(text.c_str() + eq + 1);
+}
+
+// A newer bundled settings preset replaces the installed Config/Supermodel.ini once (the old one is
+// kept as Supermodel.ini.bak). Returns true if the bundled file should be written.
+bool PresetIsNewer(const std::string& bundled)
+{
+  const int wanted = IniVersion(bundled);
+  if (wanted <= 0)
+    return false;
+  std::ifstream f("Config/Supermodel.ini", std::ios::binary);
+  std::string have((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  if (IniVersion(have) >= wanted)
+    return false;
+  std::remove("Config/Supermodel.ini.bak");
+  std::rename("Config/Supermodel.ini", "Config/Supermodel.ini.bak");
+  __android_log_print(ANDROID_LOG_INFO, kTag, "settings preset %d installed (old file kept as Supermodel.ini.bak)", wanted);
+  return true;
+}
+
 void CopyBundledFiles()
 {
   // assets/manifest.txt lists one relative path per line, written by the Gradle build.
@@ -134,7 +164,9 @@ void CopyBundledFiles()
       __android_log_print(ANDROID_LOG_WARN, kTag, "bundled file missing: %s", rel.c_str());
       continue;
     }
-    const bool have = Exists(rel);
+    bool have = Exists(rel);
+    if (have && rel == "Config/Supermodel.ini" && PresetIsNewer(data))
+      have = false;
     if (have && !(AlwaysRefresh(rel) && FileSize(rel) != (long)data.size()))
       continue;
     const size_t slash = rel.rfind('/');
