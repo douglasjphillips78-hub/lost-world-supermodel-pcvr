@@ -350,10 +350,14 @@ private:
   XrPosef    m_handPose[2] = {};      // controller aim poses this frame (local space)
   bool       m_handPoseValid[2] = {false, false};
   int        m_gunHands = 0;          // bit per hand (0 right, 1 left) that holds the gun model
+  bool       m_friendValid = false;
+  float      m_friendX = 0.f, m_friendY = 0.f;
   int        m_pointerHand = -1;      // the hand whose aim gets the pointer ring (-1: both)
 public:
   void SetGunHands(int mask) { m_gunHands = mask; }
   void SetPointerHand(int hand) { m_pointerHand = hand; }
+  // The other player's aim in a two-player game: a blue ring where they point (x, y as aimX / aimY)
+  void SetFriendAim(bool valid, float x, float y) { m_friendValid = valid; m_friendX = x; m_friendY = y; }
   int  HandPoses(New3D::VRHandPose* out, int max) const override;
 private:
 };

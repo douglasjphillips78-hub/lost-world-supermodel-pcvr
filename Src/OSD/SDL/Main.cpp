@@ -2910,6 +2910,21 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       // gun model: in the gun hand
       xr->SetGunHands(!s_vrSettings.gunModel ? 0 : (1 << s_vrGunHand));
       xr->SetPointerHand(s_vrGunHand);   // one pointer ring: the gun hand's
+      // two-player: tell the other headset where we point, and mark where they point (a blue ring)
+      {
+        static uint32_t lastAimSend = 0;
+        const uint32_t now = SDL_GetTicks();
+        const DesktopXRInput &ain = xr->Input();
+        if (s_net.role && s_net.phase == 3 && s_net.net.connected && now - lastAimSend >= 25)
+        {
+          lastAimSend = now;
+          s_net.net.SendAim(ain.aimX[s_vrGunHand], ain.aimY[s_vrGunHand], ain.aimValid[s_vrGunHand]);
+        }
+        const uint32_t at = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()).count();
+        const bool fresh = s_net.role && s_net.phase == 3 && s_net.net.friendAimSeen == 1 && at - s_net.net.friendAimAt < 500;
+        xr->SetFriendAim(fresh && !s_vrMenuOpen, s_net.net.friendAimX, s_net.net.friendAimY);
+      }
       // VRGunModel 4: the game's second ROM gun (a pistol); drawn like the game's gun
       if (vrPistolAddress)
       {

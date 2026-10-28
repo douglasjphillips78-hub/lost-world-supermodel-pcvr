@@ -1890,11 +1890,16 @@ void DesktopXR::DrawPointerRings(const float mvp[16], float L, float R, float T,
   glBindVertexArray(m_vao);
   glUseProgram(m_dotProgram);
   const float rt = 0.02f * (T - B);
-  for (int hand = 0; hand < 2; hand++) {
-    if (!PointerHand(hand))
+  for (int hand = 0; hand < 3; hand++) {
+    // hand 2 = the other player in a two-player game (a blue ring)
+    const bool friendRing = hand == 2;
+    if (friendRing ? (!m_friendValid || m_friendX < -1.f || m_friendX > 2.f || m_friendY < -1.f || m_friendY > 2.f)
+                   : (!m_hudPointers || !PointerHand(hand)))
       continue;
-    const float tx = L + m_input.aimX[hand] * (R - L);
-    const float ty = T - m_input.aimY[hand] * (T - B);
+    const float ax = friendRing ? m_friendX : m_input.aimX[hand];
+    const float ay = friendRing ? m_friendY : m_input.aimY[hand];
+    const float tx = L + ax * (R - L);
+    const float ty = T - ay * (T - B);
     float c[2], cx[2], cy[2];
     if (!project(tx, ty, c) || !project(tx + rt, ty, cx) || !project(tx, ty + rt, cy))
       continue;
@@ -1904,8 +1909,9 @@ void DesktopXR::DrawPointerRings(const float mvp[16], float L, float R, float T,
     glUniform2f(m_uDotCenter, c[0], c[1]);
     glUniform1f(m_uDotRadius, ry);
     glUniform1f(m_uDotAspect, ry / rx);
-    if (hand == 0) glUniform3f(m_uDotColor, 1.f, 0.25f, 0.2f);
-    else           glUniform3f(m_uDotColor, 0.2f, 0.8f, 1.f);
+    if (friendRing)    glUniform3f(m_uDotColor, 0.1f, 0.3f, 1.f);
+    else if (hand == 0) glUniform3f(m_uDotColor, 1.f, 0.25f, 0.2f);
+    else                glUniform3f(m_uDotColor, 0.2f, 0.8f, 1.f);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
   }
 }
@@ -1982,7 +1988,7 @@ void DesktopXR::DrawCinemaInEye(const New3D::VREye& eye)
   glBindTexture(GL_TEXTURE_2D, m_cinemaTex[v]);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
   glBindTexture(GL_TEXTURE_2D, 0);
-  if (m_hudPointers)
+  if (m_hudPointers || m_friendValid)
     DrawPointerRings(mvp, sL, sR, sT, sB);
   glDisable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -2516,7 +2522,7 @@ void DesktopXR::DrawHudInEye(const New3D::VREye& eye)
   }
   glBindTexture(GL_TEXTURE_2D, 0);
 
-  if (m_hudPointers)
+  if (m_hudPointers || m_friendValid)
     DrawPointerRings(mvp, m_gameL, m_gameR, m_gameT, m_gameB);
 
   glBindVertexArray(0);

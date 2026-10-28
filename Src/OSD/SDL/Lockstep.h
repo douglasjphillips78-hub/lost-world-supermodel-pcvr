@@ -11,6 +11,7 @@
  **   'S' state  : the host's snapshot                           (host -> joiner)
  **   'R' ready  : the joiner has loaded the snapshot            (joiner -> host)
  **   'I' input  : frame number + the sender's own GameState     (both ways, every frame)
+ **   'A' aim    : where the sender points (a marker for the other player)
  **   'V' voice  : 20 ms of microphone sound                     (both ways)
  **   'C' check  : frame number + a hash of the machine          (both ways, once a second)
  **/
@@ -67,6 +68,10 @@ public:
 
   std::atomic<bool> peerHello{false}, helloBad{false}, stateReady{false}, peerReady{false}, dead{false}, connected{false};
   std::atomic<bool> desync{false};
+  // Where the other player points (for a marker only; the game itself never sees this)
+  std::atomic<float> friendAimX{0.f}, friendAimY{0.f};
+  std::atomic<int> friendAimSeen{0};     // 0 never, 1 pointing, 2 not pointing
+  std::atomic<uint32_t> friendAimAt{0};  // when it arrived (ms)
   std::function<void(const uint8_t *, uint32_t)> onVoice;   // voice packets from the other headset
   std::vector<uint8_t> stateBuf;       // the joiner's copy of the host's snapshot (valid once stateReady)
 
@@ -116,6 +121,14 @@ public:
     memcpy(buf, &frame, 4);
     memcpy(buf + 4, &h, 8);
     SendMsg('C', buf, sizeof(buf));
+  }
+  void SendAim(float x, float y, bool valid)
+  {
+    uint8_t buf[9];
+    memcpy(buf, &x, 4);
+    memcpy(buf + 4, &y, 4);
+    buf[8] = valid ? 1 : 0;
+    SendMsg('A', buf, sizeof(buf));
   }
   void SendVoice(const uint8_t *d, uint32_t n) { SendMsg('V', d, n); }
   void SendReady() { SendMsg('R', nullptr, 0); }
@@ -492,6 +505,19 @@ private:
     case 'S':
       stateBuf = p;
       stateReady = true;
+      break;
+    case 'A':
+      if (p.size() == 9)
+      {
+        float x, y;
+        memcpy(&x, &p[0], 4);
+        memcpy(&y, &p[4], 4);
+        friendAimX = x;
+        friendAimY = y;
+        friendAimSeen = p[8] ? 1 : 2;
+        friendAimAt = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+      }
       break;
     case 'V':
       if (onVoice)
