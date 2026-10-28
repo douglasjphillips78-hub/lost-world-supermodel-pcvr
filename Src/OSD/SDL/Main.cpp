@@ -1479,7 +1479,8 @@ static int s_netUiMode = 0;          // 0 idle, 1 hosting, 2 searching, 3 joinin
 static std::string s_netUiCode, s_netUiFail;
 static int s_netPendingKind = 0;     // while choosing a code: 1 same Wi-Fi, 2 online
 static bool s_netCustomCode = false; // the player typed the code themselves
-static bool s_netDirRegistered = false;   // the room code is listed in the relay's directory
+static bool s_netDirRegistered = false;   // the room code is listed in the directory
+static std::string s_netDirTok;           // secret that lets only us change our listing
 
 // The relay's address from the ini ("host" or "host:port")
 static bool RelayAddress(std::string &host, int &port)
@@ -1497,7 +1498,75 @@ static bool RelayAddress(std::string &host, int &port)
   return true;
 }
 
-// One question to the relay's directory, answered in the background
+// The room directory: a Cloudflare Worker (Server/cloudflare) reached over HTTPS, or the relay's own
+// directory over plain TCP. LockstepDirectory = the Worker's address; this is the built-in one.
+static const char *const kDefaultDirectoryUrl = "";
+
+static std::string DirectoryUrl()
+{
+  return s_runtime_config["LockstepDirectory"].ValueAsDefault<std::string>(kDefaultDirectoryUrl);
+}
+
+static bool DirectoryAvailable()
+{
+  std::string h;
+  int p;
+  return !DirectoryUrl().empty() || RelayAddress(h, p);
+}
+
+// One line to the directory and its reply (blocks for a few seconds: call from a worker thread)
+static bool DirAsk(const std::string &line, std::string &reply, int timeoutMs = 5000)
+{
+  reply.clear();
+  const std::string url = DirectoryUrl();
+  if (!url.empty())
+  {
+#ifdef __ANDROID__
+    // HTTPS through Android's own networking (the Java side of the app)
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();      // attaches this thread
+    jobject act = (jobject)SDL_AndroidGetActivity();
+    if (!env || !act)
+      return false;
+    jclass cls = env->GetObjectClass(act);
+    jmethodID m = env->GetMethodID(cls, "dirRequest", "(Ljava/lang/String;Ljava/lang/String;I)Ljava/lang/String;");
+    if (env->ExceptionCheck())
+      env->ExceptionClear();
+    bool ok = false;
+    if (m)
+    {
+      jstring ju = env->NewStringUTF(url.c_str()), jl = env->NewStringUTF(line.c_str());
+      jstring jr = (jstring)env->CallObjectMethod(act, m, ju, jl, (jint)timeoutMs);
+      if (env->ExceptionCheck())
+        env->ExceptionClear();
+      if (jr)
+      {
+        const char *c = env->GetStringUTFChars(jr, nullptr);
+        reply = c ? c : "";
+        if (c)
+          env->ReleaseStringUTFChars(jr, c);
+        env->DeleteLocalRef(jr);
+        ok = !reply.empty();
+      }
+      env->DeleteLocalRef(ju);
+      env->DeleteLocalRef(jl);
+    }
+    env->DeleteLocalRef(cls);
+    env->DeleteLocalRef(act);
+    while (!reply.empty() && (reply.back() == '\n' || reply.back() == '\r'))
+      reply.pop_back();
+    return ok;
+#else
+    return false;        // the web directory is used from the headset
+#endif
+  }
+  std::string host;
+  int port;
+  if (!RelayAddress(host, port))
+    return false;
+  return LockNet::Ask(host, port, line, reply, timeoutMs, line.compare(0, 5, "LIST ") == 0);
+}
+
+// One question to the directory, answered in the background
 struct DirJob
 {
   std::thread th;
@@ -1506,17 +1575,16 @@ struct DirJob
   void Start(const std::string &line)
   {
     Wait();
-    std::string host;
-    int port;
-    if (!RelayAddress(host, port))
+    reply.clear();
+    if (!DirectoryAvailable())
     {
       state = 3;
       return;
     }
     state = 1;
-    th = std::thread([this, host, port, line] {
+    th = std::thread([this, line] {
       std::string r;
-      const bool ok = LockNet::Ask(host, port, line, r);
+      const bool ok = DirAsk(line, r);
       reply = r;
       state = ok ? 2 : 3;
     });
@@ -1545,13 +1613,17 @@ static void NetDirRemove()
   if (!s_netDirRegistered)
     return;
   s_netDirRegistered = false;
-  std::string host;
-  int port;
-  if (RelayAddress(host, port))
+  if (DirectoryAvailable())
   {
-    const std::string line = "DEL " + s_netUiCode + " " + (s_lock.game ? s_lock.game->name : std::string());
-    std::thread([host, port, line] { std::string r; LockNet::Ask(host, port, line, r, 3000); }).detach();
+    const std::string line = "DEL " + s_netUiCode + " " + (s_lock.game ? s_lock.game->name : std::string()) + " tok=" + s_netDirTok;
+    std::thread([line] { std::string r; DirAsk(line, r, 3000); }).detach();
   }
+}
+
+// The line that lists the room: its code, the game, our port, public or not, our address (as the router told us) and a secret
+static std::string NetPutLine(const std::string &code, bool pub)
+{
+  return "PUT " + code + " " + s_lock.game->name + " 1990" + (pub ? " pub" : "") + " ip=" + s_upnp.ExternalIp() + " tok=" + s_netDirTok;
 }
 
 static void NetUiStopAll()
@@ -1584,6 +1656,7 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
   {
     s_netCustomCode = !s.netTyped.empty();
     s_netWantPublic = s_netPendingKind == 2 && s.netPublic;
+    s_netDirTok = RandomCode(8);
     const std::string code = s_netCustomCode ? s.netTyped : RandomCode(s_netPendingKind == 1 ? 4 : 6);
     s_netUiFail.clear();
     if (s_netPendingKind == 1)
@@ -1611,10 +1684,8 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
   if (mr.netBrowse && s_netUiMode == 0)
   {
     s_netUiFail.clear();
-    std::string rh;
-    int rp;
-    if (!RelayAddress(rh, rp))
-      s_netUiFail = "Set LockstepRelay in Supermodel.ini to browse public games";
+    if (!DirectoryAvailable())
+      s_netUiFail = "No room directory set (LockstepDirectory in Supermodel.ini)";
     else
     {
       s_netPubCache.clear();
@@ -1651,16 +1722,14 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
     {
       // the room code of a host that opened its router, or of a relay room: the relay's directory knows which
       s_netJoinTyped = s.netTyped;
-      std::string rh;
-      int rp;
-      if (RelayAddress(rh, rp))
+      if (DirectoryAvailable())
       {
         s_dir.Start("GET " + s_netJoinTyped + " " + s_lock.game->name);
         s_netUiMode = 10;
         return;
       }
       ok = false;
-      s_net.lastMsg = "Set LockstepRelay in Supermodel.ini to use short room codes";
+      s_net.lastMsg = "No room directory set (LockstepDirectory in Supermodel.ini)";
     }
     if (ok)
       s_netUiMode = 6;
@@ -1732,15 +1801,16 @@ static void NetUiUpdate(VRSettings &s)
     std::string rh;
     int rp;
     const bool haveRelay = RelayAddress(rh, rp);
+    const bool haveDir = DirectoryAvailable();
     bool started = false;
     std::string code = s_netUiCode;
     if (s_upnp.State_() == Upnp::OK)
     {
       started = NetStartRuntime(LockNet::HOST, "", 1990, std::string(), true);
-      if (started && haveRelay)
+      if (started && haveDir)
       {
-        // the relay's directory maps the room code to this headset's address
-        s_dir.Start("PUT " + code + " " + s_lock.game->name + " 1990" + (s_netWantPublic ? " pub" : ""));
+        // the directory maps the room code to this headset's address
+        s_dir.Start(NetPutLine(code, s_netWantPublic));
         s_netLastDirTicks = SDL_GetTicks();
         s_netDirRegistered = true;
         s_netUiMode = 9;
@@ -1774,7 +1844,7 @@ static void NetUiUpdate(VRSettings &s)
     if (!started)
     {
       s_netUiFail = s_upnp.State_() == Upnp::OK ? (s_net.lastMsg.empty() ? "Could not start" : s_net.lastMsg)
-                                                : s_upnp.Message() + " (no relay server set either)";
+                                                : s_upnp.Message() + (haveRelay ? "" : " (no relay server set either)");
       NetUiStopAll();
     }
   }
@@ -1784,7 +1854,7 @@ static void NetUiUpdate(VRSettings &s)
       s_netUiMode = 4;
     else
     {
-      s_netUiFail = s_dir.reply == "BUSY" ? "That room code is already in use - pick another" : "Could not register the room code with the relay server";
+      s_netUiFail = s_dir.reply == "BUSY" ? "That room code is already in use - pick another" : "Could not register the room code (is LockstepDirectory right?)";
       s_netDirRegistered = false;
       if (s_net.role)
         NetAbort("room code not registered");
@@ -1799,7 +1869,14 @@ static void NetUiUpdate(VRSettings &s)
     if (s_dir.state == 2 && sscanf(s_dir.reply.c_str(), "ADDR %63s %u", ip, &port) == 2)
       ok = NetStartRuntime(LockNet::JOIN, ip, (int)port, std::string(), true);        // a host that opened its router
     else
-      ok = NetStartRuntime(LockNet::JOIN, "", 0, s_netJoinTyped);                     // a room on the relay itself
+    {
+      std::string rh;
+      int rp;
+      if (RelayAddress(rh, rp))
+        ok = NetStartRuntime(LockNet::JOIN, "", 0, s_netJoinTyped);                   // a room on the relay itself
+      else
+        s_net.lastMsg = s_dir.state == 2 ? "No game found with that code" : "Could not reach the room directory";
+    }
     if (ok)
       s_netUiMode = 6;
     else
@@ -1841,7 +1918,7 @@ static void NetUiUpdate(VRSettings &s)
     else if (s_netWantPublic && s_dir.state != 1 && SDL_GetTicks() - s_netLastDirTicks > 60000)
     {
       s_netLastDirTicks = SDL_GetTicks();                 // keep the public listing fresh
-      s_dir.Start("PUT " + s_netUiCode + " " + s_lock.game->name + " 1990 pub");
+      s_dir.Start(NetPutLine(s_netUiCode, true));
     }
   }
   if (s_netUiMode == 1 && s_net.net.connected)

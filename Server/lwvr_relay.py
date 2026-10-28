@@ -50,7 +50,7 @@ async def handle(reader, writer):
     peer = writer.get_extra_info("peername")
     try:
         line = await asyncio.wait_for(reader.readline(), 10)
-        parts = line.decode("ascii", "replace").split()
+        parts = [t for t in line.decode("ascii", "replace").split() if not t.startswith(("ip=", "tok="))]
         if len(parts) == 2 and parts[0] == "LIST" and GAME_RE.match(parts[1]):
             # The public game list: "ROOM <code> D|R <seconds>" lines (D = joinable directly, R = through
             # this relay), then END. Addresses are only handed out to someone who asks to join.
