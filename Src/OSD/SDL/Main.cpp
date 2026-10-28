@@ -77,6 +77,11 @@
 #include "Model3/RTC72421.h"
 #include "Lockstep.h"
 #include "Upnp.h"
+#include "Voice.h"
+#ifdef __ANDROID__
+#include <jni.h>
+#include <SDL_system.h>
+#endif
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -1329,6 +1334,36 @@ struct NetCtx
 };
 static NetCtx s_net;
 
+// Voice chat
+static VoiceChat s_voice;
+
+// Is the microphone allowed? With ask = true the system question is shown if it is not.
+static bool MicAllowed(bool ask)
+{
+#ifdef __ANDROID__
+  JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+  jobject act = (jobject)SDL_AndroidGetActivity();
+  if (!env || !act)
+    return false;
+  jclass cls = env->GetObjectClass(act);
+  jmethodID has = env->GetMethodID(cls, "hasMicPermission", "()Z");
+  jmethodID req = env->GetMethodID(cls, "requestMicPermission", "()V");
+  bool ok = false;
+  if (has)
+    ok = env->CallBooleanMethod(act, has) == JNI_TRUE;
+  if (!ok && ask && req)
+    env->CallVoidMethod(act, req);
+  if (env->ExceptionCheck())
+    env->ExceptionClear();
+  env->DeleteLocalRef(cls);
+  env->DeleteLocalRef(act);
+  return ok;
+#else
+  (void)ask;
+  return true;
+#endif
+}
+
 static CInputs::GameState NetNeutral()
 {
   CInputs::GameState n;
@@ -1414,6 +1449,10 @@ static bool NetStartRuntime(int role, const std::string &addr, int port, const s
   n.delay = std::clamp(s_runtime_config[online ? "LockstepOnlineDelay" : "LockstepDelay"].ValueAsDefault<int>(online ? 6 : 4), 1, 20);
   n.config = s_runtime_config["PowerPCFrequency"].ValueAsDefault<unsigned>(0);
   n.gameName = s_lock.game->name;
+  n.onVoice = [](const uint8_t *p, uint32_t len) { s_voice.OnPacket(p, len); };
+  s_voice.send = [](const uint8_t *p, uint32_t len) { s_net.net.SendVoice(p, len); };
+  s_voice.threshold = std::clamp(s_runtime_config["VoiceThreshold"].ValueAsDefault<int>(600), 50, 8000);
+  MicAllowed(true);                  // asks the first time
   std::string err;
   if (!n.Start(err))
   {
@@ -1526,6 +1565,31 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
 static void NetUiUpdate(VRSettings &s)
 {
   s.netAvail = s_lock.game && s_lock.game->name == "lostwsga" && !s_lock.mode;
+  // voice chat: runs while two headsets are playing
+  {
+    static uint32_t nextTry = 0, micChecked = 0;
+    static bool micOk = true;
+    const uint32_t now = SDL_GetTicks();
+    if (s_net.role && s_net.phase >= 1 && now - micChecked > 1000)
+    {
+      micChecked = now;
+      micOk = MicAllowed(false);
+    }
+    if (s_net.role && s_net.phase == 3 && !s_voice.Running() && micOk && now >= nextTry)
+    {
+      nextTry = now + 3000;
+      if (s_voice.Start())
+        InfoLog("[LOCKSTEP] voice chat started");
+      else
+        InfoLog("[LOCKSTEP] voice chat: could not open the microphone");
+    }
+    if (!s_net.role && s_voice.Running())
+      s_voice.Stop();
+    s_voice.muted = s.netMuted;
+    s.netMicOk = micOk && (!s_net.role || s_net.phase != 3 || s_voice.Running() || now < nextTry);
+    s.netTalking = s_voice.Talking();
+    s.netFriendTalking = s_voice.FriendTalking();
+  }
   // a session that failed while the game is paused (the menu is open) is noticed here
   if (s_net.role && (s_net.net.dead || s_net.net.helloBad))
     NetAbort(s_net.net.Status().c_str());

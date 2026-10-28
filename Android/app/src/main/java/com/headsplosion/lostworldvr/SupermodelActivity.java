@@ -1,5 +1,7 @@
 package com.headsplosion.lostworldvr;
 
+import android.Manifest;
+import android.content.pm.PackageManager;
 import org.libsdl.app.SDL;
 import org.libsdl.app.SDLActivity;
 
@@ -19,5 +21,15 @@ public class SupermodelActivity extends SDLActivity {
         } catch (Throwable ignored) {
         }
         super.loadLibraries();
+    }
+
+    /** Called from native code: is the microphone allowed? */
+    public boolean hasMicPermission() {
+        return checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** Called from native code: show the system's microphone permission question. */
+    public void requestMicPermission() {
+        runOnUiThread(() -> requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, 4242));
     }
 }

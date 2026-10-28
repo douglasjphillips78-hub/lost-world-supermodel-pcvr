@@ -7,6 +7,9 @@
 
     <!-- SDL2_net sockets (the network-board code is compiled in, though The Lost World does not use it). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Voice chat in two-player games (asked for only when a two-player game starts). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
         android:label="${appLabel}"

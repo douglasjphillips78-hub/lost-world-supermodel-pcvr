@@ -11,6 +11,7 @@
  **   'S' state  : the host's snapshot                           (host -> joiner)
  **   'R' ready  : the joiner has loaded the snapshot            (joiner -> host)
  **   'I' input  : frame number + the sender's own GameState     (both ways, every frame)
+ **   'V' voice  : 20 ms of microphone sound                     (both ways)
  **   'C' check  : frame number + a hash of the machine          (both ways, once a second)
  **/
 
@@ -20,6 +21,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -64,6 +66,7 @@ public:
 
   std::atomic<bool> peerHello{false}, helloBad{false}, stateReady{false}, peerReady{false}, dead{false}, connected{false};
   std::atomic<bool> desync{false};
+  std::function<void(const uint8_t *, uint32_t)> onVoice;   // voice packets from the other headset
   std::vector<uint8_t> stateBuf;       // the joiner's copy of the host's snapshot (valid once stateReady)
 
   bool Start(std::string &err)
@@ -113,6 +116,7 @@ public:
     memcpy(buf + 4, &h, 8);
     SendMsg('C', buf, sizeof(buf));
   }
+  void SendVoice(const uint8_t *d, uint32_t n) { SendMsg('V', d, n); }
   void SendReady() { SendMsg('R', nullptr, 0); }
   void SendStateAsync(std::vector<uint8_t> bytes)
   {
@@ -433,6 +437,10 @@ private:
     case 'S':
       stateBuf = p;
       stateReady = true;
+      break;
+    case 'V':
+      if (onVoice)
+        onVoice(p.data(), (uint32_t)p.size());
       break;
     case 'R':
       peerReady = true;

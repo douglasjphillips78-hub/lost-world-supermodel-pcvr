@@ -40,6 +40,9 @@ struct VRSettings
   std::string netStatus;
   std::string netCode;        // the room code while hosting
   std::vector<NetRoom> netRooms;
+  bool  netMuted    = false;  // microphone muted (voice chat)
+  bool  netMicOk    = true;   // the microphone is allowed / working (set by the program)
+  bool  netTalking = false, netFriendTalking = false;   // set by the program
   bool  netOnline   = false;  // the session is over the internet (relay)
   std::string netTyped;       // the room code being typed for JOIN ONLINE (phase 6)
 };

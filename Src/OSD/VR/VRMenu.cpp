@@ -501,6 +501,14 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
       }
       ImGui::Spacing();
       ImGui::TextUnformatted(Caps(s.netStatus.c_str()).c_str());
+      if (s.netPhase == 3 || s.netPhase == 4)
+      {
+        Toggle("Mute my microphone", &s.netMuted);
+        if (!s.netMicOk)
+          ImGui::TextUnformatted("NO MICROPHONE - ALLOW IT IN THE QUEST'S APP PERMISSIONS");
+        else if (s.netPhase == 4)
+          ImGui::TextUnformatted(s.netFriendTalking ? "FRIEND IS TALKING" : (s.netTalking ? "YOU ARE TALKING" : "VOICE CHAT ON"));
+      }
       if (s.netPhase != 0 && s.netPhase != 5)
       {
         ImGui::Spacing();

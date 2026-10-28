@@ -54,6 +54,9 @@ jobs:
           curl -sSL "https://github.com/libsdl-org/SDL_net/releases/download/release-${SDL2_NET_VERSION}/SDL2_net-${SDL2_NET_VERSION}.tar.gz" | tar xz
           mv "SDL2_net-${SDL2_NET_VERSION}" SDL2_net
           ls SDL2/android-project/app/src/main/java/org/libsdl/app/SDLActivity.java SDL2_net/SDLnet.c
+          # Voice chat: record with the "voice communication" source, which cancels the echo of the game's own sound
+          sed -i 's/MediaRecorder.AudioSource.DEFAULT/MediaRecorder.AudioSource.VOICE_COMMUNICATION/' SDL2/android-project/app/src/main/java/org/libsdl/app/SDLAudioManager.java
+          grep -n "VOICE_COMMUNICATION" SDL2/android-project/app/src/main/java/org/libsdl/app/SDLAudioManager.java
           find . -name gradle-wrapper.jar -delete
 
       - uses: gradle/actions/setup-gradle@v4
