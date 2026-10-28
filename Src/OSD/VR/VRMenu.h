@@ -36,7 +36,7 @@ struct VRSettings
   // Two-player over the LAN (set by the program every frame, not saved)
   struct NetRoom { std::string code, addr; int port = 0; };
   bool  netAvail    = false;  // the game supports two headsets
-  int   netPhase    = 0;      // 0 idle, 1 hosting (waiting), 2 searching, 3 connecting / starting, 4 playing, 5 failed, 6 typing a code
+  int   netPhase    = 0;      // 0 idle, 1 hosting (waiting), 2 searching, 3 connecting / starting, 4 playing, 5 failed, 6 typing a code to join, 7 choosing a code to host
   std::string netStatus;
   std::string netCode;        // the room code while hosting
   std::vector<NetRoom> netRooms;
@@ -56,6 +56,8 @@ struct VRMenuResult
   bool netHost  = false;   // "host a game" pressed
   bool netFind  = false;   // "find a game" pressed
   bool netStop  = false;   // "stop" pressed
+  int  netChoose = 0;           // "host a game" (1) / "host online" (2) pressed: show the keypad for the room code
+  bool netConfirmHost = false;  // keypad (host): start with s.netTyped (empty = a random code)
   bool netHostOnline = false;   // "host online" pressed
   bool netTypeCode   = false;   // "join online" pressed: show the keypad
   bool netConnectCode = false;  // keypad: connect with s.netTyped

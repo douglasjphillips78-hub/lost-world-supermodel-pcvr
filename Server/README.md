@@ -15,3 +15,8 @@ In the headset menu (left menu button) -> 2 PLAYER: one player picks HOST ONLINE
 the 6-digit code, the other picks JOIN ONLINE, types it and presses GO.
 
 Docker: `docker build -t lwvr-relay . && docker run -d -p 1992:1992 --restart always lwvr-relay`
+
+The relay also keeps a small directory: a host that opened its own router port leaves its address
+under its room code (`PUT`), and a joiner looks it up (`GET`). That is what lets people choose their
+own short room code and still connect directly, with the relay carrying no game data. Entries expire
+after two hours or when the host stops.

@@ -19,6 +19,8 @@ IDLE_LIMIT = 45                # seconds without any data from a side = the sess
 SESSION_LIMIT = 500 * 2**20    # bytes per session (a game is ~20 MB/hour plus a ~15 MB snapshot)
 MAX_ROOMS = 200
 
+directory = {}                 # (game, code) -> (ip, port, time): rooms hosted directly (see PUT/GET)
+DIRECTORY_LIFE = 2 * 3600
 rooms = {}                     # (game, code) -> (reader, writer, done_event)
 CODE_RE = re.compile(r"^[A-Za-z0-9]{4,12}$")
 GAME_RE = re.compile(r"^[A-Za-z0-9_]{1,24}$")
@@ -48,6 +50,33 @@ async def handle(reader, writer):
     try:
         line = await asyncio.wait_for(reader.readline(), 10)
         parts = line.decode("ascii", "replace").split()
+        if parts and parts[0] in ("PUT", "GET", "DEL") and len(parts) >= 3 and CODE_RE.match(parts[1]) and GAME_RE.match(parts[2]):
+            # The directory: a host that can be reached directly leaves its address under its room
+            # code, a joiner asks for it. (Lets people pick their own code without the relay
+            # carrying any game data.)
+            now = time.time()
+            for k in [k for k, v in directory.items() if now - v[2] > DIRECTORY_LIFE]:
+                del directory[k]
+            key = (parts[2], parts[1])
+            if parts[0] == "PUT" and len(parts) == 4 and parts[3].isdigit() and 0 < int(parts[3]) < 65536:
+                if key in directory and directory[key][0] != peer[0] and now - directory[key][2] < 600:
+                    writer.write(b"BUSY\n")
+                else:
+                    directory[key] = (peer[0], int(parts[3]), now)
+                    log(f"directory: {parts[1]} ({parts[2]}) -> {peer[0]}:{parts[3]}")
+                    writer.write(b"OK\n")
+            elif parts[0] == "GET" and len(parts) == 3:
+                e = directory.get(key)
+                writer.write(f"ADDR {e[0]} {e[1]}\n".encode() if e else b"NO\n")
+            elif parts[0] == "DEL" and len(parts) == 3:
+                if key in directory and directory[key][0] == peer[0]:
+                    del directory[key]
+                writer.write(b"OK\n")
+            else:
+                writer.write(b"BAD\n")
+            await writer.drain()
+            writer.close()
+            return
         if len(parts) != 3 or parts[0] not in ("HOST", "JOIN") or not CODE_RE.match(parts[1]) or not GAME_RE.match(parts[2]):
             writer.write(b"BAD\n")
             await writer.drain()

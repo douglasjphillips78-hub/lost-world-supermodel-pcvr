@@ -445,20 +445,22 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
       {
         ImGui::TextUnformatted("SAME WI-FI");
         if (ImGui::Button("HOST A GAME", ImVec2(fw * 0.5f - 4, 0)))
-          r.netHost = true;
+          r.netChoose = 1;
         ImGui::SameLine();
         if (ImGui::Button("FIND A GAME", ImVec2(fw * 0.5f - 4, 0)))
           r.netFind = true;
         ImGui::Spacing();
         ImGui::TextUnformatted("OVER THE INTERNET");
         if (ImGui::Button("HOST ONLINE", ImVec2(fw * 0.5f - 4, 0)))
-          r.netHostOnline = true;
+          r.netChoose = 2;
         ImGui::SameLine();
         if (ImGui::Button("JOIN ONLINE", ImVec2(fw * 0.5f - 4, 0)))
           r.netTypeCode = true;
       }
-      else if (s.netPhase == 6)
+      else if (s.netPhase == 6 || s.netPhase == 7)
       {
+        if (s.netPhase == 7)
+          ImGui::TextUnformatted("CHOOSE A ROOM CODE, OR PRESS GO FOR A RANDOM ONE");
         ImGui::TextUnformatted(Caps(("Room code:  " + s.netTyped + "_").c_str()).c_str());
         const float kw = (fw - 2 * ImGui::GetStyle().ItemSpacing.x) / 3.0f;
         for (int k = 1; k <= 12; k++)
@@ -474,8 +476,12 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
           if (ImGui::Button(label, ImVec2(kw, 0)))
           {
             if (k == 10) { if (!s.netTyped.empty()) s.netTyped.pop_back(); }
-            else if (k == 12) { if (s.netTyped.size() >= 4) r.netConnectCode = true; }
-            else if (s.netTyped.size() < 10) s.netTyped += (char)('0' + d);
+            else if (k == 12)
+            {
+              if (s.netPhase == 7) { if (s.netTyped.empty() || s.netTyped.size() >= 4) r.netConfirmHost = true; }
+              else if (s.netTyped.size() >= 4) r.netConnectCode = true;
+            }
+            else if (s.netTyped.size() < (s.netPhase == 7 ? 8u : 10u)) s.netTyped += (char)('0' + d);
           }
           ImGui::PopID();
         }
@@ -512,7 +518,7 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
       if (s.netPhase != 0 && s.netPhase != 5)
       {
         ImGui::Spacing();
-        if (ImGui::Button(s.netPhase == 6 ? "CANCEL" : "STOP", ImVec2(fw, 0)))
+        if (ImGui::Button(s.netPhase >= 6 ? "CANCEL" : "STOP", ImVec2(fw, 0)))
           r.netStop = true;
       }
       ImGui::EndTabItem();

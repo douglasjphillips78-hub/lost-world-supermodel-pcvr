@@ -1475,12 +1475,83 @@ static LockDisco s_disco;
 static Upnp s_upnp;
 static int s_netUiMode = 0;          // 0 idle, 1 hosting, 2 searching, 3 joining
 static std::string s_netUiCode, s_netUiFail;
+static int s_netPendingKind = 0;     // while choosing a code: 1 same Wi-Fi, 2 online
+static bool s_netCustomCode = false; // the player typed the code themselves
+static bool s_netDirRegistered = false;   // the room code is listed in the relay's directory
+
+// The relay's address from the ini ("host" or "host:port")
+static bool RelayAddress(std::string &host, int &port)
+{
+  host = s_runtime_config["LockstepRelay"].ValueAsDefault<std::string>("");
+  port = 1992;
+  if (host.empty())
+    return false;
+  const size_t colon = host.rfind(':');
+  if (colon != std::string::npos)
+  {
+    port = atoi(host.c_str() + colon + 1);
+    host = host.substr(0, colon);
+  }
+  return true;
+}
+
+// One question to the relay's directory, answered in the background
+struct DirJob
+{
+  std::thread th;
+  std::atomic<int> state{0};         // 0 none, 1 working, 2 answered, 3 failed
+  std::string reply;
+  void Start(const std::string &line)
+  {
+    Wait();
+    std::string host;
+    int port;
+    if (!RelayAddress(host, port))
+    {
+      state = 3;
+      return;
+    }
+    state = 1;
+    th = std::thread([this, host, port, line] {
+      std::string r;
+      const bool ok = LockNet::Ask(host, port, line, r);
+      reply = r;
+      state = ok ? 2 : 3;
+    });
+  }
+  void Wait() { if (th.joinable()) th.join(); }
+  ~DirJob() { Wait(); }
+};
+static DirJob s_dir;
+static std::string s_netJoinTyped;
+
+static std::string RandomCode(int digits)
+{
+  unsigned span = 1;
+  for (int i = 1; i < digits; i++)
+    span *= 10;
+  char code[16];
+  snprintf(code, sizeof(code), "%0*u", digits, (unsigned)(SDL_GetPerformanceCounter() % (9ull * span)) + span);
+  return code;
+}
 
 static void NetUiStopAll()
 {
   s_disco.StopBeacon();
   s_disco.StopListen();
   s_upnp.Stop();                     // give the router's port back
+  s_dir.Wait();
+  if (s_netDirRegistered)
+  {
+    s_netDirRegistered = false;      // take the code out of the directory (best effort, in the background)
+    std::string host;
+    int port;
+    if (RelayAddress(host, port))
+    {
+      const std::string line = "DEL " + s_netUiCode + " " + (s_lock.game ? s_lock.game->name : std::string());
+      std::thread([host, port, line] { std::string r; LockNet::Ask(host, port, line, r, 3000); }).detach();
+    }
+  }
   s_netUiMode = 0;
 }
 
@@ -1493,26 +1564,39 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
     NetUiStopAll();
     s_netUiFail.clear();
   }
-  if (mr.netHost && s_netUiMode == 0)
+  if (mr.netChoose && s_netUiMode == 0)
   {
-    char code[8];
-    snprintf(code, sizeof(code), "%04u", (unsigned)(SDL_GetPerformanceCounter() % 9000ull) + 1000u);
     s_netUiFail.clear();
-    if (NetStartRuntime(LockNet::HOST, "", 1990))
+    s_netPendingKind = mr.netChoose;
+    s.netTyped.clear();
+    s_netUiMode = 8;                 // the keypad: choose a room code
+  }
+  if (mr.netConfirmHost && s_netUiMode == 8)
+  {
+    s_netCustomCode = !s.netTyped.empty();
+    const std::string code = s_netCustomCode ? s.netTyped : RandomCode(s_netPendingKind == 1 ? 4 : 6);
+    s_netUiFail.clear();
+    if (s_netPendingKind == 1)
     {
-      s_netUiCode = code;
-      s_disco.StartBeacon(s_netUiCode, s_lock.game->name, 1990);
-      s_netUiMode = 1;
+      if (NetStartRuntime(LockNet::HOST, "", 1990))
+      {
+        s_netUiCode = code;
+        s_disco.StartBeacon(s_netUiCode, s_lock.game->name, 1990);
+        s_netUiMode = 1;
+      }
+      else
+      {
+        s_netUiFail = s_net.lastMsg.empty() ? "Could not start" : s_net.lastMsg;
+        s_netUiMode = 0;
+      }
     }
     else
-      s_netUiFail = s_net.lastMsg.empty() ? "Could not start" : s_net.lastMsg;
-  }
-  if (mr.netHostOnline && s_netUiMode == 0)
-  {
-    // first try to open the router's port by itself; the room code is then the public address
-    s_netUiFail.clear();
-    s_upnp.Start(1990);
-    s_netUiMode = 7;
+    {
+      // first try to open the router's port by itself
+      s_netUiCode = code;
+      s_upnp.Start(1990);
+      s_netUiMode = 7;
+    }
   }
   if (mr.netTypeCode && s_netUiMode == 0)
   {
@@ -1532,7 +1616,20 @@ static void NetMenuHandle(const VRMenuResult &mr, VRSettings &s)
       ok = v < 0x100000000ull && NetStartRuntime(LockNet::JOIN, ip, 1990, std::string(), true);
     }
     else
-      ok = NetStartRuntime(LockNet::JOIN, "", 0, s.netTyped);
+    {
+      // the room code of a host that opened its router, or of a relay room: the relay's directory knows which
+      s_netJoinTyped = s.netTyped;
+      std::string rh;
+      int rp;
+      if (RelayAddress(rh, rp))
+      {
+        s_dir.Start("GET " + s_netJoinTyped + " " + s_lock.game->name);
+        s_netUiMode = 10;
+        return;
+      }
+      ok = false;
+      s_net.lastMsg = "Set LockstepRelay in Supermodel.ini to use short room codes";
+    }
     if (ok)
       s_netUiMode = 6;
     else
@@ -1600,40 +1697,88 @@ static void NetUiUpdate(VRSettings &s)
   }
   if (s_netUiMode == 7 && s_upnp.State_() != Upnp::WORKING)
   {
-    const std::string relay = s_runtime_config["LockstepRelay"].ValueAsDefault<std::string>("");
-    char code[16];
+    std::string rh;
+    int rp;
+    const bool haveRelay = RelayAddress(rh, rp);
     bool started = false;
+    std::string code = s_netUiCode;
     if (s_upnp.State_() == Upnp::OK)
     {
-      unsigned a, b, c, d;
-      if (sscanf(s_upnp.ExternalIp().c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) == 4)
+      started = NetStartRuntime(LockNet::HOST, "", 1990, std::string(), true);
+      if (started && haveRelay)
       {
-        snprintf(code, sizeof(code), "%010u", (a << 24) | (b << 16) | (c << 8) | d);
-        started = NetStartRuntime(LockNet::HOST, "", 1990, std::string(), true);
+        // the relay's directory maps the room code to this headset's address
+        s_dir.Start("PUT " + code + " " + s_lock.game->name + " 1990");
+        s_netDirRegistered = true;
+        s_netUiMode = 9;
+      }
+      else if (started)
+      {
+        // no directory to look the code up in: the code is the address itself
+        unsigned a, b, c, d;
+        if (sscanf(s_upnp.ExternalIp().c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) == 4)
+        {
+          char buf[16];
+          snprintf(buf, sizeof(buf), "%010u", (a << 24) | (b << 16) | (c << 8) | d);
+          s_netUiCode = buf;
+          s_netUiMode = 4;
+        }
+        else
+        {
+          NetAbort("could not read the public address");
+          started = false;
+        }
       }
     }
-    if (!started && !relay.empty())
+    else if (haveRelay)
     {
       // no direct connection possible: go through the relay server instead
-      snprintf(code, sizeof(code), "%06u", (unsigned)(SDL_GetPerformanceCounter() % 900000ull) + 100000u);
       s_upnp.Stop();
       started = NetStartRuntime(LockNet::HOST, "", 0, code);
+      if (started)
+        s_netUiMode = 4;
     }
-    if (started)
+    if (!started)
     {
-      s_netUiCode = code;
-      s_netUiMode = 4;
+      s_netUiFail = s_upnp.State_() == Upnp::OK ? (s_net.lastMsg.empty() ? "Could not start" : s_net.lastMsg)
+                                                : s_upnp.Message() + " (no relay server set either)";
+      NetUiStopAll();
     }
+  }
+  if (s_netUiMode == 9 && s_dir.state != 1)
+  {
+    if (s_dir.state == 2 && s_dir.reply == "OK")
+      s_netUiMode = 4;
     else
     {
-      s_netUiFail = s_upnp.State_() == Upnp::OK ? s_net.lastMsg : s_upnp.Message() + " (no relay server set either)";
+      s_netUiFail = s_dir.reply == "BUSY" ? "That room code is already in use - pick another" : "Could not register the room code with the relay server";
+      s_netDirRegistered = false;
+      if (s_net.role)
+        NetAbort("room code not registered");
+      NetUiStopAll();
+    }
+  }
+  if (s_netUiMode == 10 && s_dir.state != 1)
+  {
+    bool ok = false;
+    unsigned port = 0;
+    char ip[64] = "";
+    if (s_dir.state == 2 && sscanf(s_dir.reply.c_str(), "ADDR %63s %u", ip, &port) == 2)
+      ok = NetStartRuntime(LockNet::JOIN, ip, (int)port, std::string(), true);        // a host that opened its router
+    else
+      ok = NetStartRuntime(LockNet::JOIN, "", 0, s_netJoinTyped);                     // a room on the relay itself
+    if (ok)
+      s_netUiMode = 6;
+    else
+    {
+      s_netUiFail = s_net.lastMsg.empty() ? "Could not start" : s_net.lastMsg;
       NetUiStopAll();
     }
   }
   if (s_netUiMode == 1 && s_net.net.connected)
     s_disco.StopBeacon();
   s.netCode = s_netUiCode;
-  s.netOnline = s_netUiMode >= 4;
+  s.netOnline = s_netUiMode >= 4 && !(s_netUiMode == 8 && s_netPendingKind == 1);
   s.netRooms.clear();
   switch (s_netUiMode)
   {
@@ -1652,6 +1797,18 @@ static void NetUiUpdate(VRSettings &s)
   case 7:
     s.netPhase = 3;
     s.netStatus = "Opening your router...";
+    break;
+  case 8:
+    s.netPhase = 7;
+    s.netStatus = "";
+    break;
+  case 9:
+    s.netPhase = 3;
+    s.netStatus = "Registering the room code...";
+    break;
+  case 10:
+    s.netPhase = 3;
+    s.netStatus = "Looking for the room...";
     break;
   case 5:
     s.netPhase = 6;

@@ -151,6 +151,59 @@ public:
     return true;
   }
 
+  // One short question to the relay's directory ("PUT code game port", "GET code game", "DEL ..."):
+  // sends one line, returns the one-line reply. Blocks for at most a few seconds.
+  static bool Ask(const std::string &host, int tcpPort, const std::string &line, std::string &reply, int timeoutMs = 5000)
+  {
+#ifdef LOCKNET_AVAILABLE
+    reply.clear();
+    struct addrinfo hints, *res = nullptr;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host.c_str(), std::to_string(tcpPort).c_str(), &hints, &res) != 0 || !res)
+      return false;
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    int fl = fcntl(s, F_GETFL, 0);
+    fcntl(s, F_SETFL, fl | O_NONBLOCK);
+    int r = connect(s, res->ai_addr, res->ai_addrlen);
+    freeaddrinfo(res);
+    if (r < 0 && errno == EINPROGRESS)
+    {
+      struct pollfd pf = { s, POLLOUT, 0 };
+      int e = 1;
+      if (poll(&pf, 1, timeoutMs) > 0)
+      {
+        socklen_t el = sizeof(e);
+        getsockopt(s, SOL_SOCKET, SO_ERROR, &e, &el);
+      }
+      r = e == 0 ? 0 : -1;
+    }
+    fcntl(s, F_SETFL, fl);
+    bool ok = r == 0;
+    if (ok)
+      ok = SendAll(s, (line + "\n").data(), line.size() + 1);
+    while (ok && reply.find('\n') == std::string::npos && reply.size() < 200)
+    {
+      struct pollfd pf = { s, POLLIN, 0 };
+      if (poll(&pf, 1, timeoutMs) <= 0)
+        { ok = false; break; }
+      char buf[128];
+      ssize_t n = recv(s, buf, sizeof(buf), 0);
+      if (n <= 0)
+        break;
+      reply.append(buf, (size_t)n);
+    }
+    close(s);
+    while (!reply.empty() && (reply.back() == '\n' || reply.back() == '\r'))
+      reply.pop_back();
+    return ok && !reply.empty();
+#else
+    (void)host; (void)tcpPort; (void)line; (void)timeoutMs;
+    return false;
+#endif
+  }
+
   std::string Status() const { std::lock_guard<std::mutex> l(stMu); return status; }
 
 private:
